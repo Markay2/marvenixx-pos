@@ -1,3 +1,6 @@
-streamlit==1.39.0
-requests==2.32.3
-pandas==2.2.2
+streamlit
+pandas
+requests
+python-dotenv
+altair
+plotly
