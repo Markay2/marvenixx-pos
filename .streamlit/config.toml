@@ -1,7 +1,6 @@
 [theme]
-base = "light"
-primaryColor = "#1E88E5"          # blue like Inox
-backgroundColor = "#F5F7FB"
+primaryColor = "#2563EB"            # Marvenixx blue
+backgroundColor = "#F9FAFB"         # very light grey
 secondaryBackgroundColor = "#FFFFFF"
-textColor = "#1F2933"
+textColor = "#0F172A"
 font = "sans serif"

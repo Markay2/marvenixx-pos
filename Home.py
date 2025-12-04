@@ -1,90 +1,100 @@
+# Home.py  – Marvenixx POS main dashboard (last 7 days view)
+
 import os
-from datetime import date
+from datetime import date, timedelta
+
 import requests
 import pandas as pd
 import streamlit as st
-import altair as alt
 
-# Use the cloud API in Render, or fallback to local if not set
 API_BASE = os.getenv("API_BASE", "http://api:8000")
 
 st.set_page_config(page_title="Marvenixx POS – Dashboard", layout="wide")
 
 st.markdown("## 📊 Marvenixx POS – Dashboard")
 
-today = date.today()
-col_date1, col_date2 = st.columns(2)
-with col_date1:
-    start_date = st.date_input("From date", value=today.replace(day=1))
-with col_date2:
-    end_date = st.date_input("To date", value=today)
-
+# --- Load sales summary (last 7 days, handled by backend default) ---
 @st.cache_data(ttl=60)
-def load_sales_summary(start: date, end: date):
-    params = {
-        "start_date": start.isoformat(),
-        "end_date": end.isoformat(),
-    }
-    r = requests.get(f"{API_BASE}/reports/sales_summary", params=params, timeout=15)
+def load_summary():
+    r = requests.get(f"{API_BASE}/reports/sales_summary", timeout=10)
     r.raise_for_status()
     return r.json()
 
 try:
-    summary = load_sales_summary(start_date, end_date)
+    summary = load_summary()
 except Exception as e:
     st.error(f"Could not load sales summary: {e}")
     st.stop()
 
-# Summary is expected to look like:
-# {
-#   "today": 123.45,
-#   "this_month": 999.99,
-#   "this_year": 12345.67,
-#   "daily": [
-#       {"date": "2025-11-01", "total": 100.0},
-#       ...
-#   ]
-# }
+# summary keys from API:
+#   sales_today, sales_this_month, sales_this_year, daily (list of {date, total})
 
-today_sales = float(summary.get("today", 0.0))
-month_sales = float(summary.get("this_month", 0.0))
-year_sales = float(summary.get("this_year", 0.0))
-daily_rows = summary.get("daily", [])
+today = date.today()
+seven_days_ago = today - timedelta(days=6)
 
-# --- KPI CARDS ---
-k1, k2, k3 = st.columns(3)
-with k1:
-    st.metric("Sales Today", f"₵ {today_sales:,.2f}")
-with k2:
-    st.metric("Sales This Month", f"₵ {month_sales:,.2f}")
-with k3:
-    st.metric("Sales This Year", f"₵ {year_sales:,.2f}")
+with st.container():
+    col_left, col_right = st.columns([2, 1])
 
-st.markdown("---")
-
-# --- DAILY SALES CHART ---
-if not daily_rows:
-    st.info("No sales found in this date range.")
-else:
-    df = pd.DataFrame(daily_rows)
-    # Ensure types
-    df["date"] = pd.to_datetime(df["date"])
-    df["total"] = df["total"].astype(float)
-
-    st.markdown("### 📈 Daily Sales Trend")
-
-    chart = (
-        alt.Chart(df)
-        .mark_line(point=True)
-        .encode(
-            x="date:T",
-            y=alt.Y("total:Q", title="Sales (₵)"),
-            tooltip=["date:T", "total:Q"],
+    with col_left:
+        st.caption(
+            f"Showing last 7 days: {seven_days_ago.isoformat()} → {today.isoformat()}"
         )
-        .properties(height=320)
-    )
 
-    st.altair_chart(chart, use_container_width=True)
+    with col_right:
+        st.markdown(
+            "<div style='text-align:right; font-size: 12px; color:#6b7280;'>"
+            "Powered by <strong>Marveniss Analytics</strong> · Marvenixx POS"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+# --- KPI cards ---
+kpi1, kpi2, kpi3 = st.columns(3)
+kpi1.metric("Sales Today", f"₵ {summary['sales_today']:,.2f}")
+kpi2.metric("Sales This Month", f"₵ {summary['sales_this_month']:,.2f}")
+kpi3.metric("Sales This Year", f"₵ {summary['sales_this_year']:,.2f}")
 
 st.markdown("---")
-st.caption("Powered by Marveniss Analytics · Marvenixx POS")
+
+# --- Daily sales chart (last 7 days) ---
+daily = summary.get("daily", [])
+df = pd.DataFrame(daily)
+
+st.markdown("### 📈 Daily Sales – Last 7 Days")
+
+if df.empty:
+    st.info("No sales recorded in the last 7 days.")
+else:
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date")
+    df = df.set_index("date")
+    df.rename(columns={"total": "Sales (₵)"}, inplace=True)
+    st.line_chart(df["Sales (₵)"])
+
+
+st.markdown(
+    """
+    <style>
+    /* Sidebar title */
+    section[data-testid="stSidebar"] .css-1d391kg {
+        font-weight: 700;
+        color: #0f766e;
+    }
+    /* App title */
+    h1, h2, h3 {
+        color: #0f172a;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+st.markdown(
+    """
+    <div style="margin-top:40px; text-align:center; color:#6b7280; font-size:12px;">
+        Powered by <strong>Marveniss Analytics</strong> · <strong>Marvenixx POS</strong>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)

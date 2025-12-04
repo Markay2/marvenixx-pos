@@ -1,64 +1,84 @@
+# 05_Dashboard.py – Detailed dashboard with custom date range
+
 import os
 from datetime import date
 
-import pandas as pd
 import requests
+import pandas as pd
 import streamlit as st
-
-st.set_page_config(page_title="Dashboard – Ateasefuor", layout="wide")
 
 API_BASE = os.getenv("API_BASE", "http://api:8000")
 
+st.set_page_config(page_title="Inventory & POS Dashboard – Marvenixx", layout="wide")
 st.markdown("## 📊 Inventory & POS Dashboard")
 
-# date range filters for the graph
+# --- Date filters ---
+today = date.today()
 col_from, col_to = st.columns(2)
 with col_from:
-    start_date = st.date_input("From date", value=date.today().replace(day=1))
+    start_date = st.date_input("From date", value=today.replace(day=1))
 with col_to:
-    end_date = st.date_input("To date", value=date.today())
+    end_date = st.date_input("To date", value=today)
 
 if start_date > end_date:
     st.error("From date cannot be after To date.")
     st.stop()
 
-
+# --- Load summary for that range ---
 @st.cache_data(ttl=60)
-def load_summary(start_date: date, end_date: date):
+def load_summary_range(start_date_str: str, end_date_str: str):
     params = {
-        "start_date": start_date.isoformat(),
-        "end_date": end_date.isoformat(),
+        "start_date": start_date_str,
+        "end_date": end_date_str,
     }
     r = requests.get(f"{API_BASE}/reports/sales_summary", params=params, timeout=10)
     r.raise_for_status()
     return r.json()
 
-
 try:
-    summary = load_summary(start_date, end_date)
+    summary = load_summary_range(start_date.isoformat(), end_date.isoformat())
 except Exception as e:
-    st.error(f"Could not load sales summary: {e} (URL: {API_BASE}/reports/sales_summary)")
+    st.error(f"Could not load sales summary: {e}")
     st.stop()
 
-# top KPIs
-k1, k2, k3, k4 = st.columns(4)
-with k1:
-    st.metric("Sales Today", f"₵ {summary['sales_today']:,.2f}")
-with k2:
-    st.metric("Sales This Month", f"₵ {summary['sales_this_month']:,.2f}")
-with k3:
-    st.metric("Sales This Year", f"₵ {summary['sales_this_year']:,.2f}")
-with k4:
-    st.metric("Date Range", f"{start_date} → {end_date}")
+st.caption(f"Date Range: {start_date.isoformat()} → {end_date.isoformat()}")
 
-# line chart for selected period
-by_day = summary.get("by_day", [])
-if not by_day:
+# --- KPIs from this range ---
+k1, k2, k3 = st.columns(3)
+k1.metric("Sales Today", f"₵ {summary['sales_today']:,.2f}")
+k2.metric("Sales This Month", f"₵ {summary['sales_this_month']:,.2f}")
+k3.metric("Sales This Year", f"₵ {summary['sales_this_year']:,.2f}")
+
+st.markdown("---")
+
+# --- Daily trend for the selected range ---
+st.markdown("### 📈 Daily Sales Trend")
+
+daily = summary.get("daily", [])
+df = pd.DataFrame(daily)
+
+if df.empty:
     st.info("No sales in this period.")
 else:
-    df = pd.DataFrame(by_day)
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date")
+    df = df.set_index("date")
+    df.rename(columns={"total": "Sales (₵)"}, inplace=True)
+    st.line_chart(df["Sales (₵)"])
 
-    st.markdown("### Sales over time")
-    st.line_chart(df.set_index("date")["total"])
+st.markdown(
+    "<div style='text-align:center; font-size: 12px; color:#6b7280; margin-top: 2rem;'>"
+    "Powered by <strong>Marveniss Analytics</strong> · Marvenixx POS"
+    "</div>",
+    unsafe_allow_html=True,
+)
+
+
+st.markdown(
+    """
+    <div style="margin-top:40px; text-align:center; color:#6b7280; font-size:12px;">
+        Powered by <strong>Marveniss Analytics</strong> · <strong>Marvenixx POS</strong>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
