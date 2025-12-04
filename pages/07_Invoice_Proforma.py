@@ -7,20 +7,20 @@ import streamlit as st
 
 API_BASE = os.getenv("API_BASE", "http://api:8000")
 
-st.set_page_config(page_title="Invoice / Pro Forma – Marvenixx POS", layout="wide")
+st.set_page_config(page_title="Invoice / Pro Forma – Ateasefuor", layout="wide")
 
 st.markdown("## 🧾 Invoice / Pro Forma")
 
-# Choose document type: affects heading + note
+# Choose whether you're printing a receipt or pro forma
 doc_type = st.radio(
     "Document type",
-    ["Receipt", "Pro Forma"],
+    ["Receipt", "Pro Forma Invoice"],
     horizontal=True,
 )
 
 sale_id = st.number_input("Sale ID", min_value=1, step=1, value=1)
 
-if st.button("Load Document", type="primary"):
+if st.button("Load Sale"):
     try:
         r = requests.get(f"{API_BASE}/sales/{int(sale_id)}", timeout=10)
         r.raise_for_status()
@@ -28,8 +28,8 @@ if st.button("Load Document", type="primary"):
     except Exception as e:
         st.error(f"Error loading sale: {e}")
     else:
-        # Backend may return {"sale": {...}, "lines": [...]}
-        # or a flat object that already has "lines".
+        # Backend can return {"sale": {...}, "lines": [...]}
+        # or a flat dict with .lines
         if isinstance(data, dict) and "sale" in data:
             sale = data["sale"]
             lines = data.get("lines", [])
@@ -37,70 +37,108 @@ if st.button("Load Document", type="primary"):
             sale = data
             lines = data.get("lines", [])
 
-        # Extract fields safely
-        sale_id_val = sale.get("id")
-        customer_name = sale.get("customer_name") or "Walk-in"
+        # --- COMPANY HEADER (edit text to match real details) ---
+        st.markdown("---")
 
-        # created_at may be ISO string; format nicely if present
-        created_raw = sale.get("created_at")
-        if created_raw:
-            try:
-                created_dt = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
-                created_str = created_dt.strftime("%d %b %Y, %H:%M")
-            except Exception:
-                created_str = str(created_raw)
-        else:
-            created_str = "-"
+        # Top header block – what will show on the printed receipt/proforma
+        left, right = st.columns([2, 1.2])
 
-        # Total may be under "total" or "total_amount"
-        total_val = sale.get("total")
-        if total_val is None:
-            total_val = sale.get("total_amount", 0.0)
+        with left:
+            st.markdown(
+                f"""
+                <div style="line-height: 1.2;">
+                    <h2 style="margin-bottom:0;">Ateasefuor Limited Company</h2>
+                    <p style="margin:0;font-size:13px;">
+                        Cold Foods & Grocery<br>
+                        (Edit address, phone, email here)
+                    </p>
+                    <p style="margin:0;font-size:13px;color:#64748b;">
+                        Powered by <strong>Marvenixx POS</strong>
+                    </p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-        # ==== HEADER ====
-        title_text = "SALES RECEIPT" if doc_type == "Receipt" else "PRO FORMA INVOICE"
-
-        st.markdown(
-            f"""
-            <div style="padding: 10px 0 20px 0;">
-                <div style="font-size:26px; font-weight:700;">Marvenixx POS</div>
-                <div style="color:#6b7280;">Powered by Marveniss Analytics</div>
-            </div>
-            <div style="margin-top:10px; margin-bottom:20px;">
-                <span style="font-size:20px; font-weight:600;">{title_text}</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        col_info1, col_info2 = st.columns(2)
-
-        with col_info1:
-            st.write(f"**Sale ID:** {sale_id_val}")
-            st.write(f"**Customer:** {customer_name}")
-        with col_info2:
-            st.write(f"**Date:** {created_str}")
-            st.write(f"**Total:** ₵ {float(total_val or 0):,.2f}")
+        with right:
+            # Document title based on selection
+            title = "RECEIPT" if doc_type == "Receipt" else "PRO FORMA INVOICE"
+            st.markdown(
+                f"""
+                <div style="
+                    border:1px solid #e5e7eb;
+                    border-radius:8px;
+                    padding:8px 12px;
+                    text-align:right;
+                    font-size:13px;
+                ">
+                    <div style="font-size:18px;font-weight:700;">{title}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
         st.markdown("---")
 
-        # ==== LINE ITEMS TABLE ====
+        # --- BASIC SALE INFO ---
+        created_at_raw = sale.get("created_at")
+        created_at_str = ""
+        if created_at_raw:
+            try:
+                dt_obj = (
+                    datetime.fromisoformat(created_at_raw.replace("Z", ""))
+                    if isinstance(created_at_raw, str)
+                    else created_at_raw
+                )
+                created_at_str = dt_obj.strftime("%d %b %Y, %H:%M")
+            except Exception:
+                created_at_str = str(created_at_raw)
+
+        customer = sale.get("customer_name") or "Walk-in customer"
+        location_id = sale.get("location_id", "")
+        total_val = float(sale.get("total", sale.get("total_amount", 0.0)) or 0.0)
+
+        info_left, info_right = st.columns(2)
+
+        with info_left:
+            st.markdown(
+                f"""
+                **Sale ID:** {sale.get('id')}  
+                **Customer:** {customer}  
+                **Date & Time:** {created_at_str}
+                """.strip()
+            )
+
+        with info_right:
+            st.markdown(
+                f"""
+                **Location ID:** {location_id}  
+                **Grand Total:** ₵ {total_val:,.2f}
+                """.strip()
+            )
+
+        st.markdown("---")
+
+        # --- LINE ITEMS TABLE ---
         if lines:
             df = pd.DataFrame(lines)
 
-            # Reorder/rename columns if we recognise them
-            preferred_cols = []
-            for c in ["product_name", "name", "sku", "qty", "unit_price", "line_total"]:
-                if c in df.columns:
-                    preferred_cols.append(c)
-            if preferred_cols:
-                df = df[preferred_cols]
+            # Try to keep only useful columns if they exist
+            preferred_order = [
+                "product_sku",
+                "product_name",
+                "qty",
+                "unit_price",
+                "line_total",
+            ]
+            cols = [c for c in preferred_order if c in df.columns]
+            if cols:
+                df = df[cols]
 
-            # Nice column labels
+            # Rename for nicer display
             rename_map = {
+                "product_sku": "SKU",
                 "product_name": "Product",
-                "name": "Product",
-                "sku": "SKU",
                 "qty": "Qty",
                 "unit_price": "Unit Price (₵)",
                 "line_total": "Line Total (₵)",
@@ -108,38 +146,41 @@ if st.button("Load Document", type="primary"):
             df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
 
             st.table(df)
+
+            # Compute subtotal if needed
+            if "line_total" in df.columns:
+                try:
+                    subtotal = float(df["Line Total (₵)"].astype(float).sum())
+                except Exception:
+                    subtotal = total_val
+            else:
+                subtotal = total_val
+
+            st.markdown(
+                f"""
+                <div style="text-align:right;font-size:14px;margin-top:10px;">
+                    <strong>Grand Total: ₵ {total_val:,.2f}</strong>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
         else:
             st.info("No line items found for this sale.")
 
         st.markdown("---")
 
-        # ==== FOOTER NOTE ====
-        if doc_type == "Pro Forma":
-            st.markdown(
-                """
-                <div style="font-size:11px; color:#9ca3af;">
-                    This is a <strong>Pro Forma Invoice</strong> (quotation only).
-                    Goods and services are not yet supplied and this is not a tax receipt.
-                </div>
-                """,
-                unsafe_allow_html=True,
+        # Footer note different for Receipt vs Pro Forma
+        if doc_type == "Pro Forma Invoice":
+            st.caption(
+                "This is a **Pro Forma Invoice** and not a final receipt. "
+                "Goods/services will be supplied upon confirmation of payment."
             )
         else:
-            st.markdown(
-                """
-                <div style="font-size:11px; color:#9ca3af;">
-                    Thank you for your business.
-                </div>
-                """,
-                unsafe_allow_html=True,
+            st.caption(
+                "Thank you for your purchase! Keep this receipt as proof of payment."
             )
 
-        st.markdown(
-            """
-            <div style="margin-top:20px; font-size:11px; color:#9ca3af;">
-                To print or save as PDF: press <strong>Ctrl+P</strong> (or Cmd+P on Mac),
-                then choose <strong>Save as PDF</strong> as the destination.
-            </div>
-            """,
-            unsafe_allow_html=True,
+        st.caption(
+            "To print, use your browser's **Print** function (Ctrl+P / Cmd+P) "
+            "and choose PDF or a physical printer."
         )
