@@ -13,7 +13,17 @@ with st.form("create_product"):
     sku = c1.text_input("SKU")
     name = c2.text_input("Name")
     barcode = c1.text_input("Barcode", value="")
-    unit = c2.text_input("Unit", value="unit")
+    unit_choice = c2.selectbox(
+    "Unit",
+    ["Pieces", "Kg", "Box", "Gallon", "Carton", "Packet", "Bottle", "Tray", "Other"],
+    index=0,
+    )
+
+    custom_unit = ""
+    if unit_choice == "Other":
+      custom_unit = c2.text_input("Custom unit (optional)", value="")
+
+    unit = custom_unit.strip() if unit_choice == "Other" and custom_unit.strip() else unit_choice
     tax = c1.number_input("Tax %", value=0.0, step=0.01)
     selling_price = st.number_input(
         "Selling Price (₵)",

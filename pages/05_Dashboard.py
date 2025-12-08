@@ -55,28 +55,5 @@ if summary is not None:
     else:
         st.info("No sales in this period.")
 
-    # ---- WhatsApp-style summary text ----
-    st.markdown("---")
-    st.subheader("📱 WhatsApp daily summary")
-
-    if start_date == end_date:
-        range_label = start_date.isoformat()
-    else:
-        range_label = f"{start_date.isoformat()} → {end_date.isoformat()}"
-
-    business_name = "Ateasefuor Limited"
-
-    whatsapp_text = (
-        f"*{business_name} – Daily Sales Summary* ({today.isoformat()})\n"
-        f"Sales today: ₵ {summary['sales_today']:,.2f}\n"
-        f"Sales this month: ₵ {summary['sales_this_month']:,.2f}\n"
-        f"Sales this year: ₵ {summary['sales_this_year']:,.2f}\n"
-        f"Period {range_label}: ₵ {range_total:,.2f}"
-    )
-
-    st.text_area(
-        value=whatsapp_text,
-        height=140,
-    )
-else:
-    st.info("No summary data yet.")
+    
+    
