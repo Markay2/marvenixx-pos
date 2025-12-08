@@ -1,100 +1,107 @@
-# Home.py  – Marvenixx POS main dashboard (last 7 days view)
+# Home.py
 
 import os
-from datetime import date, timedelta
-
 import requests
-import pandas as pd
 import streamlit as st
+from datetime import date
 
 API_BASE = os.getenv("API_BASE", "http://api:8000")
 
-st.set_page_config(page_title="Marvenixx POS – Dashboard", layout="wide")
+st.set_page_config(page_title="Marvenixx POS – Home", layout="wide")
 
-st.markdown("## 📊 Marvenixx POS – Dashboard")
+st.title("Marvenixx POS – Dashboard")
 
-# --- Load sales summary (last 7 days, handled by backend default) ---
-@st.cache_data(ttl=60)
-def load_summary():
-    r = requests.get(f"{API_BASE}/reports/sales_summary", timeout=10)
-    r.raise_for_status()
-    return r.json()
+# ---------- SIMPLE USER STORE ----------
+# You can change these users/passwords later.
+USERS = {
+    "Gerty": {"password": "Gerty123", "full_name": "Gertrude", "role": "admin"},
+    "Admin": {"password": "Admin123", "full_name": "David", "role": "admin"},
+    "Cecy": {"password": "cashier1", "full_name": "Cecilia", "role": "cashier"},
+}
 
-try:
-    summary = load_summary()
-except Exception as e:
-    st.error(f"Could not load sales summary: {e}")
-    st.stop()
+# Session store for the logged-in user
+if "user" not in st.session_state:
+    st.session_state["user"] = None
 
-# summary keys from API:
-#   sales_today, sales_this_month, sales_this_year, daily (list of {date, total})
+# ---------- LAYOUT: KPIs LEFT, LOGIN RIGHT ----------
+left_col, right_col = st.columns([2, 1])
 
-today = date.today()
-seven_days_ago = today - timedelta(days=6)
+# --- LEFT: Quick KPIs + Daily WhatsApp text ---
+with left_col:
+    st.subheader("Today’s KPIs")
 
-with st.container():
-    col_left, col_right = st.columns([2, 1])
+    sales_today = 0.0
+    sales_month = 0.0
+    sales_year = 0.0
+    period_total = 0.0
+    start_date = date.today().replace(day=1)
+    end_date = date.today()
 
-    with col_left:
-        st.caption(
-            f"Showing last 7 days: {seven_days_ago.isoformat()} → {today.isoformat()}"
-        )
+    try:
+        # summary for the full month (you can adjust if needed)
+        params = {
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+        }
+        r = requests.get(f"{API_BASE}/reports/sales_summary", params=params, timeout=10)
+        r.raise_for_status()
+        summary = r.json()
 
-    with col_right:
-        st.markdown(
-            "<div style='text-align:right; font-size: 12px; color:#6b7280;'>"
-            "Powered by <strong>Marveniss Analytics</strong> · Marvenixx POS"
-            "</div>",
-            unsafe_allow_html=True,
-        )
+        sales_today = float(summary.get("sales_today", 0))
+        sales_month = float(summary.get("sales_this_month", 0))
+        sales_year = float(summary.get("sales_this_year", 0))
+        period_total = sum(row["total"] for row in summary.get("daily", []))
 
-# --- KPI cards ---
-kpi1, kpi2, kpi3 = st.columns(3)
-kpi1.metric("Sales Today", f"₵ {summary['sales_today']:,.2f}")
-kpi2.metric("Sales This Month", f"₵ {summary['sales_this_month']:,.2f}")
-kpi3.metric("Sales This Year", f"₵ {summary['sales_this_year']:,.2f}")
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Sales Today", f"₵ {sales_today:,.2f}")
+        k2.metric("Sales This Month", f"₵ {sales_month:,.2f}")
+        k3.metric("Sales This Year", f"₵ {sales_year:,.2f}")
+    except Exception as e:
+        st.error(f"Could not load KPIs: {e}")
 
-st.markdown("---")
+    st.markdown("---")
+    st.subheader("📱 WhatsApp daily summary")
+    whatsapp_text = (
+        f"*Ateasefuor Limited – Daily Sales Summary* ({end_date.isoformat()})\n"
+        f"Sales today: ₵ {sales_today:,.2f}\n"
+        f"Sales this month: ₵ {sales_month:,.2f}\n"
+        f"Sales this year: ₵ {sales_year:,.2f}\n"
+        f"Period {start_date.isoformat()} → {end_date.isoformat()}: ₵ {period_total:,.2f}"
+    )
+    st.text_area(
+        "Copy & paste this into WhatsApp for the owner:",
+        value=whatsapp_text,
+        height=140,
+    )
 
-# --- Daily sales chart (last 7 days) ---
-daily = summary.get("daily", [])
-df = pd.DataFrame(daily)
+    st.caption("Go to *POS Sales* to record transactions and *Invoice Proforma* to print receipts.")
 
-st.markdown("### 📈 Daily Sales – Last 7 Days")
+# --- RIGHT: Login / Logout ---
+with right_col:
+    st.subheader("Staff login")
 
-if df.empty:
-    st.info("No sales recorded in the last 7 days.")
-else:
-    df["date"] = pd.to_datetime(df["date"])
-    df = df.sort_values("date")
-    df = df.set_index("date")
-    df.rename(columns={"total": "Sales (₵)"}, inplace=True)
-    st.line_chart(df["Sales (₵)"])
+    if st.session_state["user"] is not None:
+        user = st.session_state["user"]
+        name = user.get("full_name") or user.get("username")
+        role = user.get("role", "user")
+        st.success(f"Logged in as **{name}** ({role})")
 
+        if st.button("Log out"):
+            st.session_state["user"] = None
+            st.experimental_rerun()
+    else:
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
 
-st.markdown(
-    """
-    <style>
-    /* Sidebar title */
-    section[data-testid="stSidebar"] .css-1d391kg {
-        font-weight: 700;
-        color: #0f766e;
-    }
-    /* App title */
-    h1, h2, h3 {
-        color: #0f172a;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-
-st.markdown(
-    """
-    <div style="margin-top:40px; text-align:center; color:#6b7280; font-size:12px;">
-        Powered by <strong>Marveniss Analytics</strong> · <strong>Marvenixx POS</strong>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+        if st.button("Login"):
+            record = USERS.get(username)
+            if record and password == record["password"]:
+                st.session_state["user"] = {
+                    "username": username,
+                    "full_name": record.get("full_name"),
+                    "role": record.get("role", "user"),
+                }
+                st.success("Login successful. You can now go to POS Sales and Invoice Proforma.")
+                st.experimental_rerun()
+            else:
+                st.error("Invalid username or password.")
