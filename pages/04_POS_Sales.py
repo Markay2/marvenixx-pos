@@ -1,3 +1,5 @@
+# app/pages/04_POS_Sales.py
+
 import os
 import pandas as pd
 import requests
@@ -12,9 +14,15 @@ st.markdown("## 🧾 Point of Sale")
 # --- Load products from API ---
 @st.cache_data(ttl=60)
 def load_products():
+    """
+    Use the existing /products endpoint.
+    If later the API returns available_qty, we will use it;
+    otherwise, POS still works without it.
+    """
     r = requests.get(f"{API_BASE}/products", timeout=10)
     r.raise_for_status()
     return r.json()
+
 
 try:
     products = load_products()
@@ -99,7 +107,6 @@ with left_col:
             st.session_state["cart"] = []
             st.rerun()
 
-
         # Send sale to API when any payment button is pressed
         if pay_cash or pay_card or pay_momo:
             payload = {
@@ -126,11 +133,21 @@ with left_col:
                         f"Use the Invoice / Pro Forma page with Sale ID {data['sale_id']} "
                         "to print receipt or quotation."
                     )
+
+                    # Optional low-stock warnings if backend sends them
+                    for item in data.get("low_stock", []):
+                        st.warning(
+                            f"Low stock: {item['name']} (SKU {item['sku']}) – "
+                            f"{item['remaining']} left."
+                        )
+
                     st.session_state["cart"] = []
+                    st.rerun()
                 else:
                     st.error(f"Error from API: {r.status_code} – {r.text}")
             except Exception as e:
                 st.error(f"Could not send sale to API: {e}")
+
     else:
         st.info("Cart is empty. Click products on the right to add items.")
 
@@ -141,6 +158,7 @@ with right_col:
     st.markdown("### 📦 Products")
 
     search = st.text_input("Search by name / SKU / barcode")
+
     df = pd.DataFrame(products)
 
     if search:
@@ -154,8 +172,8 @@ with right_col:
     if df.empty:
         st.warning("No products match your search.")
     else:
-        # Keep essential columns INCLUDING selling_price
-        cols_keep = ["sku", "name", "unit", "selling_price", "tax_rate"]
+        # Keep essential columns, including optional available_qty
+        cols_keep = ["sku", "name", "unit", "selling_price", "tax_rate", "available_qty"]
         existing_cols = [c for c in cols_keep if c in df.columns]
         df = df[existing_cols].copy()
 
@@ -168,8 +186,20 @@ with right_col:
                 with cols[idx]:
                     sku = prod["sku"]
                     name = prod["name"]
-                    # If selling_price column exists, use it, else 0
+                    unit = prod.get("unit", "")
                     price = float(prod.get("selling_price", 0.0) or 0.0)
+
+                    # Optional stock info if available
+                    if "available_qty" in prod and prod["available_qty"] is not None:
+                        avail = float(prod.get("available_qty", 0.0) or 0.0)
+                        stock_line = f"Available: {avail:,.2f} {unit}".strip()
+                        low_stock = avail <= 5
+                        stock_color = "#dc2626" if low_stock else "#0f766e"
+                    else:
+                        avail = None
+                        stock_line = f"Unit: {unit}".strip()
+                        stock_color = "#6b7280"
+                        low_stock = False
 
                     st.markdown(
                         f"""
@@ -179,10 +209,11 @@ with right_col:
                             margin-bottom: 8px;
                             background-color: #ffffff;
                             box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
-                            min-height: 90px;
+                            min-height: 100px;
                         ">
                             <strong>{name}</strong><br>
-                            <span style="font-size:12px;color:#6b7280;">SKU: {sku}</span><br>
+                            <span style="font-size:11px;color:#6b7280;">SKU: {sku}</span><br>
+                            <span style="font-size:11px;color:{stock_color};">{stock_line}</span><br>
                             <span style="font-size:12px;color:#16a34a;">₵ {price:,.2f}</span>
                         </div>
                         """,
@@ -193,21 +224,29 @@ with right_col:
                         cart = st.session_state.get("cart", [])
 
                         existing = next((c for c in cart if c["sku"] == sku), None)
-                        if existing:
-                            existing["qty"] += 1
-                            existing["line_total"] = (
-                                existing["qty"] * existing["unit_price"]
+                        already_qty = existing["qty"] if existing else 0.0
+
+                        # Optional front-end oversell check if we have stock
+                        if avail is not None and already_qty + 1 > avail:
+                            st.warning(
+                                f"Not enough stock. Available: {avail:,.2f} {unit}."
                             )
                         else:
-                            cart.append(
-                                {
-                                    "sku": sku,
-                                    "name": name,
-                                    "qty": 1.0,
-                                    "unit_price": price,
-                                    "line_total": price,
-                                }
-                            )
+                            if existing:
+                                existing["qty"] += 1
+                                existing["line_total"] = (
+                                    existing["qty"] * existing["unit_price"]
+                                )
+                            else:
+                                cart.append(
+                                    {
+                                        "sku": sku,
+                                        "name": name,
+                                        "qty": 1.0,
+                                        "unit_price": price,
+                                        "line_total": price,
+                                    }
+                                )
 
-                        st.session_state["cart"] = cart
-                        st.rerun()
+                            st.session_state["cart"] = cart
+                            st.rerun()

@@ -1,3 +1,5 @@
+# app/pages/03_Stock_Transfer.py
+
 import os
 import requests
 import streamlit as st
@@ -37,7 +39,9 @@ if from_loc_name == to_loc_name:
 from_loc_id = name_to_id[from_loc_name]
 to_loc_id = name_to_id[to_loc_name]
 
-# ========== LOAD PRODUCTS (for SKU / name help) ==========
+st.markdown("---")
+
+# ========== LOAD PRODUCTS (for dropdown + unit help) ==========
 try:
     p_resp = requests.get(f"{API_BASE}/products", timeout=10)
     p_resp.raise_for_status()
@@ -46,22 +50,57 @@ except Exception as e:
     st.error(f"Could not load product list: {e}")
     products = []
 
-sku_to_name = {p["sku"]: p["name"] for p in products}
+if not products:
+    st.warning("No products available. Create products first on Products page.")
+    st.stop()
+
+# Build label → sku / unit map
+product_labels = []
+label_to_sku = {}
+sku_to_unit = {}
+
+for p in products:
+    sku = p.get("sku", "")
+    name = p.get("name", "")
+    unit = p.get("unit", "")
+    label = f"{name} [{sku}] ({unit})" if unit else f"{name} [{sku}]"
+    product_labels.append(label)
+    label_to_sku[label] = sku
+    sku_to_unit[sku] = unit
 
 # ========== DYNAMIC LINES ==========
+st.subheader("Lines")
+
 if "transfer_rows" not in st.session_state:
     st.session_state["transfer_rows"] = 1
 
-if st.button("Add Line"):
-    st.session_state["transfer_rows"] += 1
+c_add, c_reset = st.columns(2)
+with c_add:
+    if st.button("➕ Add Line"):
+        st.session_state["transfer_rows"] += 1
+with c_reset:
+    if st.button("🧹 Clear Lines"):
+        st.session_state["transfer_rows"] = 1
 
 lines = []
 for i in range(st.session_state["transfer_rows"]):
     with st.expander(f"Line {i+1}", expanded=True):
-        sku = st.text_input("Product SKU", key=f"sku_{i}")
-        if sku and sku in sku_to_name:
-            st.caption(f"Product: {sku_to_name[sku]}")
-        qty = st.number_input("Qty", min_value=0.0, step=0.1, key=f"qty_{i}")
+        prod_label = st.selectbox(
+            "Product",
+            product_labels,
+            key=f"prod_{i}",
+        )
+        sku = label_to_sku[prod_label]
+        unit = sku_to_unit.get(sku, "")
+
+        st.caption(f"SKU: **{sku}** – Unit: **{unit}**")
+
+        qty = st.number_input(
+            "Qty",
+            min_value=0.0,
+            step=0.1,
+            key=f"qty_{i}",
+        )
 
         lines.append(
             {
@@ -70,10 +109,14 @@ for i in range(st.session_state["transfer_rows"]):
             }
         )
 
+st.markdown("---")
+
 # ========== POST TRANSFER ==========
 if st.button("Post Transfer"):
     if from_loc_name == to_loc_name:
         st.error("From and To locations must be different.")
+    elif not any(line["qty"] > 0 for line in lines):
+        st.error("At least one line must have a quantity > 0.")
     else:
         payload = {
             "from_location_id": from_loc_id,

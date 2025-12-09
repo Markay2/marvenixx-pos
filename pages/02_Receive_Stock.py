@@ -1,14 +1,17 @@
-import streamlit as st
-import requests
 import os
 from datetime import date
 
-st.title("Receive Stock (GRN)")
+import pandas as pd
+import requests
+import streamlit as st
+
+st.set_page_config(page_title="Receive Stock (GRN) – Marvenixx POS", layout="wide")
 
 API_BASE = os.getenv("API_BASE", "http://api:8000")
 
-# ---------- Load products & locations ----------
+st.title("Receive Stock (GRN)")
 
+# -------------- Helpers to load products & locations -------------- #
 @st.cache_data(ttl=60)
 def load_products():
     r = requests.get(f"{API_BASE}/products", timeout=10)
@@ -21,96 +24,143 @@ def load_locations():
     r.raise_for_status()
     return r.json()
 
+
+# -------------- Load reference data -------------- #
 try:
-    PRODUCTS = load_products()
+    products = load_products()
 except Exception as e:
     st.error(f"Could not load product list: {e}")
-    PRODUCTS = []
+    products = []
 
 try:
-    LOCATIONS = load_locations()
+    locations = load_locations()
 except Exception as e:
     st.error(f"Could not load locations: {e}")
-    LOCATIONS = []
+    locations = []
 
+if not products:
+    st.warning("No products found. Please create products first.")
+    st.stop()
 
-# ---------- Dynamic lines ----------
+if not locations:
+    st.warning("No locations found. Please create locations in the backend.")
+    st.stop()
 
-if "rows" not in st.session_state:
-    st.session_state["rows"] = 1
+# Build mappings for easy lookup
+product_by_label: dict[str, dict] = {}
+for p in products:
+    name = p.get("name", "Unknown")
+    sku = p.get("sku", "")
+    unit = p.get("unit", "")
+    label = f"{name} ({sku} – {unit})" if unit else f"{name} ({sku})"
+    product_by_label[label] = p
 
-if st.button("Add Line"):
-    st.session_state["rows"] += 1
+location_by_name: dict[str, dict] = {}
+for loc in locations:
+    loc_name = loc.get("name", f"Location {loc.get('id')}")
+    location_by_name[loc_name] = loc
 
+location_names = list(location_by_name.keys())
+
+# -------------- Session state for dynamic lines -------------- #
+if "grn_rows" not in st.session_state:
+    st.session_state["grn_rows"] = 1
+
+col_btn_add, col_btn_reset = st.columns([1, 1])
+with col_btn_add:
+    if st.button("➕ Add Line"):
+        st.session_state["grn_rows"] += 1
+with col_btn_reset:
+    if st.button("🔄 Reset Lines"):
+        st.session_state["grn_rows"] = 1
+
+st.write("")
+
+# -------------- GRN Lines Form -------------- #
 lines = []
-
-for i in range(st.session_state["rows"]):
+for i in range(st.session_state["grn_rows"]):
     with st.expander(f"Line {i+1}", expanded=True):
+        c1, c2 = st.columns([2, 1])
+        c3, c4, c5 = st.columns([1, 1, 1])
 
-        # PRODUCT: search by SKU or name (type in the box)
-        if PRODUCTS:
-            prod_label_to_sku = {}
-            for p in PRODUCTS:
-                label = f"{p['sku']} – {p['name']}"
-                prod_label_to_sku[label] = p["sku"]
+        # Product dropdown showing UNIT (Kg, Box, Gallon, Sachet, Bag, etc.)
+        product_label = c1.selectbox(
+            "Product (name / SKU / unit)",
+            options=list(product_by_label.keys()),
+            key=f"prod_{i}",
+        )
+        product = product_by_label[product_label]
+        sku = product.get("sku")
 
-            prod_labels = list(prod_label_to_sku.keys())
+        qty = c2.number_input(
+            "Qty",
+            key=f"qty_{i}",
+            min_value=0.0,
+            step=0.1,
+            value=0.0,
+        )
 
-            selected_prod_label = st.selectbox(
-                "Product (type SKU or name)",
-                options=prod_labels,
-                key=f"prod_{i}",
-            )
-            sku = prod_label_to_sku[selected_prod_label]
-        else:
-            sku = st.text_input("Product SKU", key=f"sku{i}")
+        unit_cost = c3.number_input(
+            "Unit Cost (₵)",
+            key=f"cost_{i}",
+            min_value=0.0,
+            step=0.01,
+            value=0.0,
+        )
 
-        qty = st.number_input("Qty", key=f"qty{i}", min_value=0.0, step=0.1)
-        cost = st.number_input("Unit Cost", key=f"cost{i}", min_value=0.0, step=0.01)
-        lot = st.text_input("Lot Code (optional)", key=f"lot{i}", value="")
-        exp = st.date_input("Expiry (optional)", key=f"exp{i}", value=date.today())
+        lot_code = c4.text_input(
+            "Lot Code (optional)",
+            key=f"lot_{i}",
+            value="",
+        )
 
-        # LOCATION: choose by name instead of ID
-        if LOCATIONS:
-            loc_name_to_id = {loc["name"]: loc["id"] for loc in LOCATIONS}
-            loc_names = list(loc_name_to_id.keys())
+        expiry = c5.date_input(
+            "Expiry (optional)",
+            key=f"exp_{i}",
+            value=date.today(),
+        )
 
-            selected_loc_name = st.selectbox(
-                "To Location",
-                options=loc_names,
-                key=f"loc_{i}",
-            )
-            loc_id = loc_name_to_id[selected_loc_name]
-        else:
-            # Fallback if locations API fails
-            loc_id = st.number_input(
-                "To Location ID",
-                key=f"loc{i}",
-                min_value=1,
-                value=1,
-            )
+        # Location by NAME, not ID
+        loc_name = c1.selectbox(
+            "To Location",
+            options=location_names,
+            key=f"loc_{i}",
+        )
+        loc = location_by_name[loc_name]
+        loc_id = loc.get("id")
 
+        # Collect this line
         lines.append(
             {
                 "product_sku": sku,
-                "qty": qty,
-                "unit_cost": cost,
-                "lot_code": lot or None,
-                "expiry_date": str(exp),
+                "qty": float(qty),
+                "unit_cost": float(unit_cost),
+                "lot_code": lot_code or None,
+                "expiry_date": str(expiry) if expiry else None,
                 "to_location_id": int(loc_id),
             }
         )
 
-# ---------- Post GRN ----------
+st.write("")
 
-if st.button("Post GRN"):
-    payload = {"supplier": None, "lines": lines}
-    try:
-        r = requests.post(f"{API_BASE}/receipts", json=payload, timeout=10)
-        if r.status_code == 200:
-            st.success("GRN posted successfully.")
-            st.json(r.json())
-        else:
-            st.error(f"Error from API: {r.status_code} – {r.text}")
-    except Exception as e:
-        st.error(f"Error sending receipt: {e}")
+# -------------- Submit GRN to API -------------- #
+if st.button("📥 Post GRN (Receive Stock)", type="primary"):
+    # Filter out empty lines (qty = 0 or no cost)
+    clean_lines = [
+        ln for ln in lines
+        if ln["qty"] > 0 and ln["unit_cost"] > 0 and ln["product_sku"]
+    ]
+
+    if not clean_lines:
+        st.error("No valid lines to post. Please enter quantity and unit cost.")
+    else:
+        payload = {
+            "supplier": None,  # later you can add supplier name / ID
+            "lines": clean_lines,
+        }
+        try:
+            r = requests.post(f"{API_BASE}/receipts", json=payload, timeout=15)
+            r.raise_for_status()
+            st.success(f"GRN posted successfully: {r.json()}")
+        except Exception as e:
+            st.error(f"Error sending GRN to API: {e}")

@@ -1,95 +1,225 @@
+# app/pages/01_Products.py
+
 import os
 import requests
 import pandas as pd
 import streamlit as st
 
-st.title("Products")
-
 API_BASE = os.getenv("API_BASE", "http://api:8000")
 
-# ---------- Create product ----------
+st.set_page_config(page_title="Products – Marvenixx POS", layout="wide")
+st.title("Products")
+
+# who is logged in (set on Home.py)
+current_user = st.session_state.get("user")
+current_role = current_user.get("role") if current_user else None
+is_admin = current_role == "admin"
+
+# ------------------ CREATE PRODUCT ------------------ #
+
+st.subheader("Create new product")
+
 with st.form("create_product"):
     c1, c2 = st.columns(2)
-    sku = c1.text_input("SKU")
+
+    # SKU is optional now – leave blank to auto-generate
+    sku = c1.text_input("SKU (leave blank for auto)")
+
     name = c2.text_input("Name")
     barcode = c1.text_input("Barcode", value="")
-    unit_choice = c2.selectbox(
-    "Unit",
-    ["Pieces", "Kg", "Box", "Gallon", "Carton", "Packet", "Bottle", "Tray", "Other"],
-    index=0,
+
+    unit = c2.selectbox(
+        "Unit",
+        options=[
+            "piece",
+            "kg",
+            "box",
+            "carton",
+            "gallon",
+            "sachet",
+            "bag",
+            "bottle",
+            "tin",
+            "other",
+        ],
+        index=0,
     )
 
-    custom_unit = ""
-    if unit_choice == "Other":
-      custom_unit = c2.text_input("Custom unit (optional)", value="")
-
-    unit = custom_unit.strip() if unit_choice == "Other" and custom_unit.strip() else unit_choice
-    tax = c1.number_input("Tax %", value=0.0, step=0.01)
-    selling_price = st.number_input(
+    tax = c1.number_input("Tax %", value=0.0, step=0.01, key="tax_create")
+    selling_price = c2.number_input(
         "Selling Price (₵)",
         min_value=0.0,
         value=0.0,
-        step=0.10,
+        step=0.1,
+        key="price_create",
     )
+
     submitted = st.form_submit_button("Create")
     if submitted:
         payload = {
-            "sku": sku,
-            "name": name,
-            "barcode": barcode or None,
+            "sku": sku.strip() or None,
+            "name": name.strip(),
+            "barcode": barcode.strip() or None,
             "unit": unit,
-            "tax_rate": tax,
-            "selling_price": selling_price,
+            "tax_rate": float(tax),
+            "selling_price": float(selling_price),
         }
-        try:
-            r = requests.post(f"{API_BASE}/products", json=payload, timeout=10)
-            if r.status_code == 200:
-                st.success("Product created.")
-            else:
-                st.error(f"Error: {r.text}")
-        except Exception as e:
-            st.error(f"Error creating product: {e}")
 
-st.subheader("All Products")
+        if not payload["name"]:
+            st.error("Name is required.")
+        else:
+            try:
+                r = requests.post(f"{API_BASE}/products", json=payload, timeout=15)
+                if r.status_code == 200:
+                    st.success("Product created.")
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error(f"Error: {r.status_code} – {r.text}")
+            except Exception as e:
+                st.error(f"Error creating product: {e}")
+
+st.markdown("---")
+
+# ------------------ LOAD ALL PRODUCTS ------------------ #
+
+st.subheader("All products")
+
 items = []
 try:
-    r = requests.get(f"{API_BASE}/products", timeout=10)
-    r.raise_for_status()
-    items = r.json()
+    resp = requests.get(f"{API_BASE}/products", timeout=15)
+    resp.raise_for_status()
+    items = resp.json()
 except Exception as e:
     st.error(f"Error fetching products: {e}")
 
-if isinstance(items, list) and items:
-    df = pd.DataFrame(items)
-    st.dataframe(df, use_container_width=True)
+if items:
+    df_full = pd.DataFrame(items)
 
-    # ------- Delete product section -------
-    st.markdown("### Delete a product")
-
-    # Build options "ID – Name (SKU)"
-    options_map = {
-        f"{row['id']} – {row.get('name','')} ({row.get('sku','')})": row["id"]
-        for row in items
-    }
-    option_label = st.selectbox(
-        "Select product to delete",
-        list(options_map.keys()),
-        index=0,
-        key="delete_product_select",
+    # Display-friendly subset
+    display_cols = [c for c in ["id", "sku", "name", "unit", "selling_price", "tax_rate"] if c in df_full.columns]
+    df_display = df_full[display_cols].rename(
+        columns={
+            "id": "ID",
+            "sku": "SKU",
+            "name": "Name",
+            "unit": "Unit",
+            "selling_price": "Price (₵)",
+            "tax_rate": "Tax %",
+        }
     )
-    if st.button("Delete selected product"):
-        product_id = options_map[option_label]
-        try:
-            resp = requests.delete(
-                f"{API_BASE}/products/{product_id}",
-                timeout=10,
-            )
-            if resp.status_code == 200:
-                st.success("Product deleted. Refresh page to see changes.")
-            else:
-                st.error(f"Error deleting: {resp.text}")
-        except Exception as e:
-            st.error(f"Error deleting product: {e}")
 
+    st.dataframe(df_display, use_container_width=True, hide_index=True)
 else:
     st.info("No products yet.")
+    df_full = pd.DataFrame([])
+
+# ------------------ EDIT / DELETE (ADMIN ONLY) ------------------ #
+
+if not df_full.empty:
+    if is_admin:
+        st.markdown("### Admin: Edit or deactivate product")
+
+        # Build labels like "3 – Frozen Chicken (CHICK0001)"
+        df_full = df_full.sort_values("id")
+        choices = [
+            f"{row['id']} – {row['name']} ({row['sku']})"
+            for _, row in df_full.iterrows()
+        ]
+        selected_label = st.selectbox("Choose product", choices, key="admin_product_select")
+
+        # Extract chosen id
+        selected_id = int(selected_label.split("–")[0].strip())
+        selected_row = df_full[df_full["id"] == selected_id].iloc[0].to_dict()
+
+        st.markdown(f"**Editing ID {selected_id} – {selected_row['name']}**")
+
+        with st.form("edit_product"):
+            ec1, ec2 = st.columns(2)
+
+            new_name = ec1.text_input("Name", value=selected_row.get("name", ""))
+            new_barcode = ec2.text_input("Barcode", value=selected_row.get("barcode") or "")
+
+            # unit options must match create form
+            unit_options = [
+                "piece",
+                "kg",
+                "box",
+                "carton",
+                "gallon",
+                "sachet",
+                "bag",
+                "bottle",
+                "tin",
+                "other",
+            ]
+            current_unit = selected_row.get("unit") or "piece"
+            try:
+                default_unit_idx = unit_options.index(current_unit)
+            except ValueError:
+                default_unit_idx = 0
+
+            new_unit = ec1.selectbox(
+                "Unit",
+                options=unit_options,
+                index=default_unit_idx,
+                key="unit_edit",
+            )
+
+            new_tax = ec2.number_input(
+                "Tax %",
+                value=float(selected_row.get("tax_rate") or 0.0),
+                step=0.01,
+                key="tax_edit",
+            )
+            new_price = ec1.number_input(
+                "Selling Price (₵)",
+                min_value=0.0,
+                value=float(selected_row.get("selling_price") or 0.0),
+                step=0.1,
+                key="price_edit",
+            )
+
+            col_save, col_deact = st.columns(2)
+            save_clicked = col_save.form_submit_button("💾 Save changes")
+            deactivate_clicked = col_deact.form_submit_button("🗑 Deactivate product")
+
+            if save_clicked:
+                payload = {
+                    "name": new_name.strip(),
+                    "barcode": new_barcode.strip() or None,
+                    "unit": new_unit,
+                    "tax_rate": float(new_tax),
+                    "selling_price": float(new_price),
+                }
+                try:
+                    r = requests.patch(
+                        f"{API_BASE}/products/{selected_id}",
+                        json=payload,
+                        timeout=15,
+                    )
+                    if r.status_code == 200:
+                        st.success("Product updated.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error(f"Error from API: {r.status_code} – {r.text}")
+                except Exception as e:
+                    st.error(f"Error calling API: {e}")
+
+            if deactivate_clicked:
+                try:
+                    r = requests.delete(
+                        f"{API_BASE}/products/{selected_id}",
+                        timeout=15,
+                    )
+                    if r.status_code == 200:
+                        st.success("Product deactivated. It will no longer appear in POS / Receive Stock.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error(f"Error from API: {r.status_code} – {r.text}")
+                except Exception as e:
+                    st.error(f"Error calling API: {e}")
+    else:
+        st.info("Log in as an admin user on the Home page to edit or deactivate products.")
