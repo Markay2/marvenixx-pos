@@ -5,6 +5,9 @@ import pandas as pd
 import requests
 import streamlit as st
 
+from auth import require_login
+require_login()
+
 API_BASE = os.getenv("API_BASE", "http://api:8000")
 
 st.set_page_config(page_title="Sales History – Ateasefuor", layout="wide")

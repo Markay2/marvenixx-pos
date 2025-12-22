@@ -5,10 +5,16 @@ import requests
 import pandas as pd
 import streamlit as st
 
+from auth import require_login
+require_login()
+
 API_BASE = os.getenv("API_BASE", "http://api:8000")
 
 st.set_page_config(page_title="Products – Marvenixx POS", layout="wide")
 st.title("Products")
+
+
+
 
 # who is logged in (set on Home.py)
 current_user = st.session_state.get("user")
@@ -223,3 +229,20 @@ if not df_full.empty:
                     st.error(f"Error calling API: {e}")
     else:
         st.info("Log in as an admin user on the Home page to edit or deactivate products.")
+
+
+
+@st.dialog("Edit product (Admin)")
+def edit_product_dialog(prod):
+    new_name = st.text_input("Name", value=prod["name"])
+    new_unit = st.selectbox("Unit", ["piece","kg","box","carton","gallon","sachet","bag"], index=0)
+    new_price = st.number_input("Selling price", value=float(prod["selling_price"]), step=0.1)
+    if st.button("Save changes"):
+        payload = {"name": new_name, "unit": new_unit, "selling_price": new_price}
+        r = requests.put(f"{API_BASE}/products/{prod['id']}", json=payload, timeout=10)
+        if r.status_code == 200:
+            st.success("Updated.")
+            st.rerun()
+        else:
+            st.error(r.text)
+

@@ -3,6 +3,9 @@ import requests
 import os
 import pandas as pd
 
+from auth import require_login
+require_login()
+
 st.title("Reports — Inventory On Hand")
 
 API_BASE = os.getenv("API_BASE", "http://api:8000")

@@ -6,10 +6,14 @@ import pandas as pd
 import streamlit as st
 from datetime import date
 
-API_BASE = os.getenv("API_BASE", "http://api:8000")
+from auth import require_login
+require_login()
 
+st.set_page_config(page_title="MXP Dashboard", layout="wide")
 st.title("📊 Marvenixx POS – Dashboard")
 
+
+API_BASE = os.getenv("API_BASE", "http://api:8000")
 # --- Date range controls ---
 today = date.today()
 default_start = today.replace(day=1)

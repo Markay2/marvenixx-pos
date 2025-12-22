@@ -5,6 +5,9 @@ import requests
 import streamlit as st
 from datetime import date
 
+from auth import require_login
+require_login()
+
 API_BASE = os.getenv("API_BASE", "http://api:8000")
 
 st.set_page_config(page_title="Stock Transfer – Marvenixx POS", layout="wide")

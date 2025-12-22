@@ -1,6 +1,6 @@
 [theme]
-primaryColor = "#2563EB"            # Marvenixx blue
-backgroundColor = "#F9FAFB"         # very light grey
-secondaryBackgroundColor = "#FFFFFF"
-textColor = "#0F172A"
-font = "sans serif"
+primaryColor="#00B86B"
+backgroundColor="#FFFFFF"
+secondaryBackgroundColor="#F6F8FA"
+textColor="#111827"
+font="sans serif"

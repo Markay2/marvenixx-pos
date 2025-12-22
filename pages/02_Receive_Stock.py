@@ -5,6 +5,9 @@ import pandas as pd
 import requests
 import streamlit as st
 
+from auth import require_login
+require_login()
+
 st.set_page_config(page_title="Receive Stock (GRN) – Marvenixx POS", layout="wide")
 
 API_BASE = os.getenv("API_BASE", "http://api:8000")
