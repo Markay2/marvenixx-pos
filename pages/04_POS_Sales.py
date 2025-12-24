@@ -536,7 +536,7 @@ with left:
                         "sku": ln["sku"],
                         "qty": float(ln["qty"]),
                         "unit_price": float(ln["unit_price"]),
-                        "location_id": int(location_id),  # keep per-line if backend validates it
+
                     }
                     for ln in st.session_state["cart"]
                 ],
@@ -652,6 +652,9 @@ else:
         created = sale.get("created_at") or ""
         customer = sale.get("customer_name") or "Walk-in Customer"
         total_amount = sale.get("total") or sale.get("total_amount") or 0
+
+
+    
 
         html = build_print_html(
             company=company,

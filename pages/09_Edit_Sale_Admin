@@ -1,0 +1,33 @@
+import os, requests, streamlit as st
+from auth import require_login
+require_login()
+
+API_BASE = os.getenv("API_BASE", "http://api:8000")
+
+# Only admin
+user = st.session_state.get("user", {})
+if user.get("role") != "admin":
+    st.error("Admin only.")
+    st.stop()
+
+st.title("🛠 Edit Sale (Add Items Only)")
+
+sale_id = st.number_input("Sale ID", min_value=1, step=1, value=1)
+
+st.markdown("### Add new item")
+sku = st.text_input("SKU")
+qty = st.number_input("Qty", min_value=0.5, step=0.5, value=1.0)
+unit_price = st.number_input("Unit price", min_value=0.0, step=1.0, value=0.0)
+
+location_id = st.number_input("Location ID", min_value=1, step=1, value=1)
+
+if st.button("➕ Add to sale"):
+    payload = {
+        "location_id": int(location_id),
+        "lines": [{"sku": sku.strip(), "qty": float(qty), "unit_price": float(unit_price)}],
+    }
+    r = requests.post(f"{API_BASE}/sales/{int(sale_id)}/add_lines", json=payload, timeout=20)
+    if r.status_code == 200:
+        st.success(f"Added. {r.json()}")
+    else:
+        st.error(r.text)
