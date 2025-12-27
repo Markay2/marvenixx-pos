@@ -1,6 +1,5 @@
 # app/pages/04_POS_Sales.py
 import os
-import base64
 from datetime import datetime
 
 import pandas as pd
@@ -14,7 +13,8 @@ require_login()
 st.set_page_config(page_title="POS – Marvenixx POS", layout="wide")
 
 API_BASE = os.getenv("API_BASE", "http://api:8000")
-STEP = 0.5  # quantity step (0.5 interval)
+DEFAULT_STEP = 0.5
+
 
 # -------------------- Styling (compact UI + printing) --------------------
 st.markdown(
@@ -39,7 +39,6 @@ st.markdown(
       }
       .mxp-tiles button { margin-top: 4px; }
 
-      /* Printing */
       @media print {
         [data-testid="stSidebar"], header, footer, #MainMenu, [data-testid="stToolbar"] { display:none !important; }
         .no-print { display:none !important; }
@@ -70,11 +69,6 @@ def money(x) -> str:
         return "₵ 0.00"
 
 
-def clamp_step(x: float) -> float:
-    # force multiples of STEP
-    return round(float(x) / STEP) * STEP
-
-
 def safe_float(x, default=None):
     try:
         return float(x)
@@ -82,19 +76,23 @@ def safe_float(x, default=None):
         return default
 
 
+def get_step_for_unit(unit: str) -> float:
+    u = (unit or "").strip().lower()
+    if u in ["kg", "g", "gram", "grams", "l", "litre", "liter", "ml"]:
+        return 0.1
+    if u in ["piece", "pcs", "box", "bag", "bottle", "sachet", "tin", "gallon"]:
+        return 0.5
+    return DEFAULT_STEP
+
+
+def clamp_to_step(x: float, step: float) -> float:
+    if step <= 0:
+        return float(x)
+    return round(float(x) / step) * step
+
+
 @st.cache_data(ttl=60)
 def load_company():
-    """
-    Expected API response shape:
-    {
-      "company_name": "...",
-      "address": "...",
-      "phone": "...",
-      "website": "...",
-      "footer": "...",
-      "logo_base64": "...."
-    }
-    """
     try:
         r = requests.get(f"{API_BASE}/settings/company", timeout=15)
         r.raise_for_status()
@@ -102,7 +100,6 @@ def load_company():
     except Exception:
         data = {}
 
-    # Hard fallbacks so printing never breaks
     return {
         "company_name": data.get("company_name", "Marvenixx POS (MXP)"),
         "address": data.get("address", ""),
@@ -114,11 +111,6 @@ def load_company():
 
 
 def parse_sale_response(data):
-    """
-    Accept both:
-      A) {"sale": {...}, "lines": [...]}
-      B) {"id":..., ... , "lines":[...]}   (rare)
-    """
     sale = None
     lines = []
 
@@ -138,12 +130,11 @@ def parse_sale_response(data):
     return sale, lines
 
 
-def build_print_html(company, doc_type, sale_id, created, customer, location_label, lines, total_amount):
-    # Build table rows (Waybill excludes prices)
+def build_print_html(company, doc_type, receipt_no, sale_id, created, customer, location_label, lines, total_amount):
     rows_html = ""
     if doc_type == "Waybill":
         for ln in lines:
-            item = ln.get("product_name") or ln.get("name") or ln.get("item") or ""
+            item = ln.get("product_name") or ""
             qty = safe_float(ln.get("qty", 0), 0.0)
             rows_html += f"""
               <tr>
@@ -159,7 +150,7 @@ def build_print_html(company, doc_type, sale_id, created, customer, location_lab
         """
     else:
         for ln in lines:
-            item = ln.get("product_name") or ln.get("name") or ln.get("item") or ""
+            item = ln.get("product_name") or ""
             qty = safe_float(ln.get("qty", 0), 0.0)
             unit_price = safe_float(ln.get("unit_price", 0), 0.0)
             line_total = safe_float(ln.get("line_total", qty * unit_price), qty * unit_price)
@@ -180,39 +171,12 @@ def build_print_html(company, doc_type, sale_id, created, customer, location_lab
           </tr>
         """
 
-    # Logo block
     logo_html = ""
     if company.get("logo_base64"):
-        logo_html = f"""
-          <img src="data:image/png;base64,{company['logo_base64']}" style="height:60px;object-fit:contain;" />
-        """
+        logo_html = f"<img src='data:image/png;base64,{company['logo_base64']}' style='height:60px;object-fit:contain;' />"
 
-    # Proforma note
-    proforma_note = ""
-    if doc_type == "Proforma":
-        proforma_note = """
-          <div style="text-align:center;color:#6b7280;font-size:11px;margin-top:4px;">
-            This is a Proforma document (not a tax invoice).
-          </div>
-        """
-
-    # Header contact lines
-    address = company.get("address", "").strip()
-    phone = company.get("phone", "").strip()
-    website = company.get("website", "").strip()
-
-    contact_lines = ""
-    if address:
-        contact_lines += f"<div style='font-size:11px;color:#111;'>{address}</div>"
-    if phone or website:
-        contact_lines += f"<div style='font-size:11px;color:#111;'>{phone}{' • ' if phone and website else ''}{website}</div>"
-
-    # Safe date
-    created_txt = ""
-    if created:
-        created_txt = str(created)[:19].replace("T", " ")
-    else:
-        created_txt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    created_txt = str(created)[:19].replace("T", " ") if created else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    footer = (company.get("footer") or "").strip() or "Thank you for your business."
 
     total_html = ""
     if doc_type != "Waybill":
@@ -223,72 +187,24 @@ def build_print_html(company, doc_type, sale_id, created, customer, location_lab
           </div>
         """
 
-    footer = company.get("footer", "").strip() or "Thank you for your business."
-
     html = f"""
     <!doctype html>
     <html>
     <head>
       <meta charset="utf-8"/>
       <style>
-        body {{
-          font-family: Arial, sans-serif;
-          font-size: 12px;
-          color: #111;
-          margin: 0;
-          padding: 0;
-          background: #fff;
-        }}
-
-        /* Receipt container */
-        .wrap {{
-          width: 80mm;              /* ✅ receipt width (change to 58mm if needed) */
-          max-width: 80mm;
-          margin: 0 auto;           /* ✅ center on page */
-          padding: 10px;
-          background: #fff;
-          border: 1px solid #e5e7eb;
-          border-radius: 8px;
-        }}
-
-        table {{
-          width: 100%;
-          border-collapse: collapse;
-          font-size: 11px;
-        }}
-
-        th, td {{
-          padding: 4px 0;
-        }}
-
-        button {{
-          border: 1px solid #111;
-          background: #111;
-          color: #fff;
-          padding: 6px 10px;
-          border-radius: 6px;
-          cursor: pointer;
-          font-weight: 700;
-          font-size: 11px;
-        }}
-
+        body {{ font-family: Arial, sans-serif; font-size: 12px; color:#111; margin:0; padding:0; background:#fff; }}
+        .wrap {{ width: 80mm; max-width: 80mm; margin:0 auto; padding:10px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; }}
+        table {{ width:100%; border-collapse:collapse; font-size:11px; }}
+        th,td {{ padding:4px 0; }}
+        button {{ border:1px solid #111; background:#111; color:#fff; padding:6px 10px; border-radius:6px; cursor:pointer; font-weight:700; font-size:11px; }}
         .muted {{ color:#6b7280; }}
-
         @media print {{
-          body 
-            margin: 0;
-          }}
-
-          .no-print {{display:none !important; }}
-
-          /* IMPORTANT: do NOT force A4 width */
-          @page {{
-            size: auto;
-            margin: 5mm;
-          }}
+          body {{ margin:0; }}
+          .no-print {{ display:none !important; }}
+          @page {{ size:auto; margin:5mm; }}
         }}
       </style>
-
     </head>
     <body>
       <div class="wrap">
@@ -296,9 +212,7 @@ def build_print_html(company, doc_type, sale_id, created, customer, location_lab
           <div>{logo_html}</div>
           <div style="flex:1;">
             <div style="font-weight:900;font-size:16px;line-height:1.1;">{company.get('company_name','')}</div>
-            {contact_lines}
             <div class="muted" style="font-size:12px;margin-top:6px;font-weight:800;">{doc_type}</div>
-            {proforma_note}
           </div>
         </div>
 
@@ -310,6 +224,7 @@ def build_print_html(company, doc_type, sale_id, created, customer, location_lab
             <div><b>Location:</b> {location_label}</div>
           </div>
           <div style="text-align:right;">
+            <div><b>Receipt:</b> {receipt_no or "-"}</div>
             <div><b>Sale ID:</b> {sale_id}</div>
             <div><b>Date:</b> {created_txt}</div>
           </div>
@@ -363,10 +278,8 @@ with top_b:
     doc_type = st.selectbox("Print document", ["Receipt", "Proforma", "Waybill"], key="pos_doc_type")
 
 
-# Load products
 @st.cache_data(ttl=10)
 def load_products_with_stock(location_id: int):
-    # try /products/with_stock
     try:
         data = api_get("/products/with_stock", params={"location_id": location_id})
         if isinstance(data, list):
@@ -374,7 +287,6 @@ def load_products_with_stock(location_id: int):
     except Exception:
         pass
 
-    # fallback /products
     data = api_get("/products")
     if isinstance(data, list):
         for p in data:
@@ -398,10 +310,23 @@ for col in ["sku", "name", "unit", "selling_price", "available_qty"]:
     if col not in df.columns:
         df[col] = None
 
+# Stock map for oversell checks
+stock_map = {}
+for _, r in df.iterrows():
+    sku = str(r.get("sku") or "").strip()
+    if not sku:
+        continue
+    stock_map[sku] = {
+        "available_qty": safe_float(r.get("available_qty"), None),
+        "unit": str(r.get("unit") or ""),
+        "name": str(r.get("name") or ""),
+        "selling_price": safe_float(r.get("selling_price"), 0.0),
+    }
+
 
 # -------------------- Cart State --------------------
 if "cart" not in st.session_state:
-    st.session_state["cart"] = []  # list of dicts
+    st.session_state["cart"] = []
 
 if "last_sale_id" not in st.session_state:
     st.session_state["last_sale_id"] = None
@@ -409,51 +334,101 @@ if "last_sale_id" not in st.session_state:
 if "print_now" not in st.session_state:
     st.session_state["print_now"] = False
 
+# ✅ Add Panel state (REPLACES popover)
+if "add_panel_sku" not in st.session_state:
+    st.session_state["add_panel_sku"] = None
 
-def cart_add_from_row(row_dict, step=STEP):
-    sku = str(row_dict.get("sku") or "")
+if "add_panel_qty" not in st.session_state:
+    st.session_state["add_panel_qty"] = 0.0
+
+
+def cart_find(sku: str):
+    return next((x for x in st.session_state.get("cart", []) if x["sku"] == sku), None)
+
+
+def cart_add_qty(sku: str, name: str, unit: str, unit_price: float, available_qty, qty_to_add: float):
     if not sku:
         return
-    name = str(row_dict.get("name") or "")
-    unit = str(row_dict.get("unit") or "")
-    price = safe_float(row_dict.get("selling_price") or row_dict.get("unit_price") or 0, 0.0)
-    avail = row_dict.get("available_qty", None)
+
+    step = get_step_for_unit(unit)
+    qty_to_add = clamp_to_step(max(0.0, float(qty_to_add)), step)
+    if qty_to_add <= 0:
+        return
 
     cart = st.session_state.get("cart", [])
-    existing = next((x for x in cart if x["sku"] == sku), None)
+    existing = cart_find(sku)
     already = safe_float(existing["qty"], 0.0) if existing else 0.0
 
-    # oversell check if avail exists
-    if avail is not None:
-        avail_f = safe_float(avail, None)
-        if avail_f is not None and already + step > avail_f:
-            st.warning(f"Not enough stock. Available: {avail_f:.2f} {unit}")
-            return
+    avail_f = safe_float(available_qty, None)
+    if avail_f is not None and already + qty_to_add > avail_f:
+        st.warning(f"Not enough stock. Available: {avail_f:.2f} {unit}")
+        return
 
     if existing:
-        existing["qty"] = clamp_step(already + step)
+        existing["qty"] = clamp_to_step(already + qty_to_add, step)
     else:
-        cart.append({"sku": sku, "name": name, "unit": unit, "qty": clamp_step(step), "unit_price": float(price)})
+        cart.append({"sku": sku, "name": name, "unit": unit, "qty": qty_to_add, "unit_price": float(unit_price)})
 
     st.session_state["cart"] = cart
 
 
-def cart_minus(sku: str, step=STEP):
+def cart_set_qty(sku: str, qty: float):
     cart = st.session_state.get("cart", [])
-    existing = next((x for x in cart if x["sku"] == sku), None)
+    line = cart_find(sku)
+    if not line:
+        return
+
+    unit = line.get("unit", "")
+    step = get_step_for_unit(unit)
+    new_qty = clamp_to_step(max(0.0, float(qty)), step)
+
+    avail_f = stock_map.get(sku, {}).get("available_qty", None)
+    if avail_f is not None and new_qty > avail_f:
+        st.warning(f"Not enough stock for {line.get('name','')} — Available: {avail_f:.2f} {unit}")
+        new_qty = avail_f
+
+    if new_qty <= 0:
+        st.session_state["cart"] = [x for x in cart if x["sku"] != sku]
+    else:
+        line["qty"] = float(new_qty)
+        st.session_state["cart"] = cart
+
+
+def cart_minus(sku: str):
+    cart = st.session_state.get("cart", [])
+    existing = cart_find(sku)
     if not existing:
         return
-    new_qty = clamp_step(max(0.0, safe_float(existing["qty"], 0.0) - step))
+
+    unit = existing.get("unit", "")
+    step = get_step_for_unit(unit)
+    new_qty = clamp_to_step(max(0.0, safe_float(existing["qty"], 0.0) - step), step)
+
     if new_qty <= 0:
-        cart = [x for x in cart if x["sku"] != sku]
+        st.session_state["cart"] = [x for x in cart if x["sku"] != sku]
     else:
         existing["qty"] = new_qty
-    st.session_state["cart"] = cart
+        st.session_state["cart"] = cart
+
+
+def cart_plus(sku: str):
+    line = cart_find(sku)
+    if not line:
+        return
+    unit = line.get("unit", "")
+    step = get_step_for_unit(unit)
+    cart_add_qty(
+        sku=sku,
+        name=line.get("name", ""),
+        unit=unit,
+        unit_price=float(line.get("unit_price", 0.0)),
+        available_qty=stock_map.get(sku, {}).get("available_qty", None),
+        qty_to_add=float(step),
+    )
 
 
 def cart_remove(sku: str):
-    cart = st.session_state.get("cart", [])
-    st.session_state["cart"] = [x for x in cart if x["sku"] != sku]
+    st.session_state["cart"] = [x for x in st.session_state.get("cart", []) if x["sku"] != sku]
 
 
 # -------------------- Layout --------------------
@@ -465,52 +440,63 @@ with left:
     customer_name = st.text_input("Customer (optional)", key="pos_customer")
 
     cart = st.session_state["cart"]
-
     if not cart:
         st.info("Cart is empty. Add products on the right.")
     else:
         total = 0.0
-
-        for line in cart:
+        for line in list(cart):
             sku = str(line["sku"])
+            unit = str(line.get("unit") or "")
+            step = get_step_for_unit(unit)
+
             qty = safe_float(line.get("qty"), 0.0)
             price = safe_float(line.get("unit_price"), 0.0)
-            line_total = qty * price
-            total += line_total
 
-            # compact header
             st.markdown(
                 f"""
                 <div class="mxp-card">
                   <div class="mxp-name">{line['name']}</div>
-                  <div class="mxp-meta">{line.get('unit','')} • SKU: {sku}</div>
+                  <div class="mxp-meta">{unit} • SKU: {sku}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-            # tighter controls: [-] qty [+] trash
-            c1, c2, c3, c4 = st.columns([1, 1.1, 1, 0.8], gap="small")
+            c1, c2, c3, c4 = st.columns([1, 1.4, 1, 0.8], gap="small")
 
             if c1.button("➖", key=f"minus_{sku}", use_container_width=True):
                 cart_minus(sku)
                 st.rerun()
 
-            c2.markdown(f"<div class='mxp-qty'>{qty:.2f}</div>", unsafe_allow_html=True)
+            with c2:
+                typed_qty = st.number_input(
+                    "Qty",
+                    min_value=0.0,
+                    value=float(qty),
+                    step=float(step),
+                    format="%.3f",
+                    key=f"qty_input_{sku}",
+                    label_visibility="collapsed",
+                )
+                if float(typed_qty) != float(qty):
+                    cart_set_qty(sku, float(typed_qty))
+                    st.rerun()
 
             if c3.button("➕", key=f"plus_{sku}", use_container_width=True):
-                # add increment using existing line data
-                cart_add_from_row(
-                    {"sku": sku, "name": line["name"], "unit": line.get("unit", ""), "unit_price": price, "available_qty": None},
-                    STEP,
-                )
+                cart_plus(sku)
                 st.rerun()
 
             if c4.button("🗑", key=f"rm_{sku}", use_container_width=True):
                 cart_remove(sku)
                 st.rerun()
 
-            st.caption(f"{money(price)} each • Line: {money(line_total)}")
+            line_now = cart_find(sku)
+            if line_now:
+                qty_now = safe_float(line_now.get("qty"), 0.0)
+                price_now = safe_float(line_now.get("unit_price"), 0.0)
+                line_total = qty_now * price_now
+                total += line_total
+                st.caption(f"{money(price_now)} each • Line: {money(line_total)}")
 
         st.markdown(f"### Total: {money(total)}")
 
@@ -523,7 +509,6 @@ with left:
             st.session_state["cart"] = []
             st.rerun()
 
-        # Checkout
         if pay_cash or pay_card or pay_momo:
             method = "CASH" if pay_cash else ("CARD" if pay_card else "MOMO")
 
@@ -532,12 +517,7 @@ with left:
                 "location_id": int(location_id),
                 "payment_method": method,
                 "lines": [
-                    {
-                        "sku": ln["sku"],
-                        "qty": float(ln["qty"]),
-                        "unit_price": float(ln["unit_price"]),
-
-                    }
+                    {"sku": ln["sku"], "qty": float(ln["qty"]), "unit_price": float(ln["unit_price"])}
                     for ln in st.session_state["cart"]
                 ],
             }
@@ -547,12 +527,13 @@ with left:
             if r.status_code == 200:
                 data = r.json() or {}
                 sale_id = int(data.get("sale_id") or data.get("id") or 0)
+                receipt_no = data.get("receipt_no")
 
                 st.session_state["last_sale_id"] = sale_id
                 st.session_state["cart"] = []
                 st.session_state["print_now"] = False
 
-                st.success(f"Sale #{sale_id} recorded. Total {money(data.get('total', total))}")
+                st.success(f"Sale #{sale_id} ({receipt_no}) recorded. Total {money(data.get('total', total))}")
                 st.cache_data.clear()
                 st.rerun()
             else:
@@ -563,6 +544,54 @@ with left:
 with right:
     st.markdown("### 📦 Products")
     search = st.text_input("Search product name / SKU", key="pos_search")
+
+    # ✅ Add Panel (reliable replacement for popover)
+    if st.session_state["add_panel_sku"]:
+        sku = st.session_state["add_panel_sku"]
+        info = stock_map.get(sku, {})
+        name = info.get("name", sku)
+        unit = info.get("unit", "")
+        price = info.get("selling_price", 0.0)
+        avail = info.get("available_qty", None)
+        step = get_step_for_unit(unit)
+
+        st.markdown("#### ➕ Add Quantity")
+        a1, a2, a3, a4 = st.columns([2.2, 1.2, 1.2, 1.2], gap="small")
+
+        with a1:
+            st.info(f"**{name}** • SKU {sku} • {unit} • Price {money(price)}")
+
+        with a2:
+            qty_to_add = st.number_input(
+                "Qty to add",
+                min_value=0.0,
+                value=float(st.session_state.get("add_panel_qty", step) or step),
+                step=float(step),
+                format="%.3f",
+                key="add_panel_qty_input",
+            )
+
+        with a3:
+            if st.button("✅ Add to Cart", use_container_width=True):
+                cart_add_qty(
+                    sku=sku,
+                    name=name,
+                    unit=unit,
+                    unit_price=float(price),
+                    available_qty=avail,
+                    qty_to_add=float(qty_to_add),
+                )
+                st.session_state["add_panel_sku"] = None
+                st.session_state["add_panel_qty"] = 0.0
+                st.rerun()
+
+        with a4:
+            if st.button("❌ Cancel", use_container_width=True):
+                st.session_state["add_panel_sku"] = None
+                st.session_state["add_panel_qty"] = 0.0
+                st.rerun()
+
+        st.markdown("---")
 
     show_df = df.copy()
     if search:
@@ -603,14 +632,16 @@ with right:
                     unsafe_allow_html=True,
                 )
 
-                if st.button("➕ Add", key=f"add_tile_{sku}", use_container_width=True):
-                    cart_add_from_row(row.to_dict(), STEP)
+                # ✅ Reliable Add button -> opens Add Panel
+                if st.button("➕ Add", key=f"open_add_{sku}", use_container_width=True):
+                    st.session_state["add_panel_sku"] = sku
+                    st.session_state["add_panel_qty"] = get_step_for_unit(unit)
                     st.rerun()
 
         st.markdown("</div>", unsafe_allow_html=True)
 
 
-# ================= PRINT AREA (Same POS Page) =================
+# ================= PRINT AREA =================
 st.markdown("---")
 st.markdown("## 🖨 Print Area")
 
@@ -620,7 +651,6 @@ company = load_company()
 if not sale_id:
     st.info("Complete a sale first. After payment, your document will appear here.")
 else:
-    # Load sale details
     sale = None
     lines = []
 
@@ -652,13 +682,12 @@ else:
         created = sale.get("created_at") or ""
         customer = sale.get("customer_name") or "Walk-in Customer"
         total_amount = sale.get("total") or sale.get("total_amount") or 0
-
-
-    
+        receipt_no = sale.get("receipt_no") or ""
 
         html = build_print_html(
             company=company,
             doc_type=doc_type,
+            receipt_no=receipt_no,
             sale_id=sale.get("id", sale_id),
             created=created,
             customer=customer,
@@ -666,12 +695,10 @@ else:
             lines=lines,
             total_amount=total_amount,
         )
-
-        # If user clicked Print Now, trigger print inside the iframe
         if st.session_state.get("print_now"):
-            # inject a print at end (iframe prints its own content)
+
             html = html.replace("</body>", "<script>window.print();</script></body>")
-            st.session_state["print_now"] = False  # avoid looping
+            st.session_state["print_now"] = False
 
         st.components.v1.html(html, height=740, scrolling=True)
     else:
