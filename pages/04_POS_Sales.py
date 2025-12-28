@@ -9,12 +9,11 @@ import streamlit as st
 from auth import require_login
 
 require_login()
-
 st.set_page_config(page_title="POS – Marvenixx POS", layout="wide")
 
 API_BASE = os.getenv("API_BASE", "http://api:8000")
-DEFAULT_STEP = 0.5
 
+DEFAULT_STEP = 0.5
 
 # -------------------- Styling (compact UI + printing) --------------------
 st.markdown(
@@ -39,6 +38,7 @@ st.markdown(
       }
       .mxp-tiles button { margin-top: 4px; }
 
+      /* Printing */
       @media print {
         [data-testid="stSidebar"], header, footer, #MainMenu, [data-testid="stToolbar"] { display:none !important; }
         .no-print { display:none !important; }
@@ -50,17 +50,14 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
 # -------------------- Helpers --------------------
 def api_get(path: str, params=None):
     r = requests.get(f"{API_BASE}{path}", params=params, timeout=20)
     r.raise_for_status()
     return r.json()
 
-
 def api_post(path: str, payload: dict):
     return requests.post(f"{API_BASE}{path}", json=payload, timeout=25)
-
 
 def money(x) -> str:
     try:
@@ -68,28 +65,24 @@ def money(x) -> str:
     except Exception:
         return "₵ 0.00"
 
-
 def safe_float(x, default=None):
     try:
         return float(x)
     except Exception:
         return default
 
-
 def get_step_for_unit(unit: str) -> float:
     u = (unit or "").strip().lower()
     if u in ["kg", "g", "gram", "grams", "l", "litre", "liter", "ml"]:
         return 0.1
     if u in ["piece", "pcs", "box", "bag", "bottle", "sachet", "tin", "gallon"]:
-        return 0.5
+        return 0.5  # business default
     return DEFAULT_STEP
-
 
 def clamp_to_step(x: float, step: float) -> float:
     if step <= 0:
         return float(x)
     return round(float(x) / step) * step
-
 
 @st.cache_data(ttl=60)
 def load_company():
@@ -107,34 +100,41 @@ def load_company():
         "website": data.get("website", ""),
         "footer": data.get("footer", "Thank you for your business."),
         "logo_base64": data.get("logo_base64", "") or "",
+        "currency_symbol": data.get("currency_symbol", "₵"),
     }
-
 
 def parse_sale_response(data):
     sale = None
     lines = []
-
     if isinstance(data, dict) and "sale" in data:
         sale = data.get("sale") or {}
         lines = data.get("lines") or []
     elif isinstance(data, dict):
         sale = data
         lines = data.get("lines") or []
-    else:
-        sale = None
-        lines = []
-
     if not isinstance(lines, list):
         lines = []
-
     return sale, lines
 
-
-def build_print_html(company, doc_type, receipt_no, sale_id, created, customer, location_label, lines, total_amount):
+def build_print_html(
+    company,
+    doc_type,
+    sale_id,
+    created,
+    customer,
+    location_label,
+    lines,
+    total_amount,
+    receipt_no=None,
+    payment_method=None,
+    cash_received=None,
+    change_due=None,
+):
+    # rows
     rows_html = ""
     if doc_type == "Waybill":
         for ln in lines:
-            item = ln.get("product_name") or ""
+            item = ln.get("product_name") or ln.get("name") or ln.get("item") or ""
             qty = safe_float(ln.get("qty", 0), 0.0)
             rows_html += f"""
               <tr>
@@ -150,7 +150,7 @@ def build_print_html(company, doc_type, receipt_no, sale_id, created, customer, 
         """
     else:
         for ln in lines:
-            item = ln.get("product_name") or ""
+            item = ln.get("product_name") or ln.get("name") or ln.get("item") or ""
             qty = safe_float(ln.get("qty", 0), 0.0)
             unit_price = safe_float(ln.get("unit_price", 0), 0.0)
             line_total = safe_float(ln.get("line_total", qty * unit_price), qty * unit_price)
@@ -173,10 +173,27 @@ def build_print_html(company, doc_type, receipt_no, sale_id, created, customer, 
 
     logo_html = ""
     if company.get("logo_base64"):
-        logo_html = f"<img src='data:image/png;base64,{company['logo_base64']}' style='height:60px;object-fit:contain;' />"
+        logo_html = f"""<img src="data:image/png;base64,{company['logo_base64']}" style="height:60px;object-fit:contain;" />"""
+
+    proforma_note = ""
+    if doc_type == "Proforma":
+        proforma_note = """
+          <div style="text-align:center;color:#6b7280;font-size:11px;margin-top:4px;">
+            This is a Proforma document (not a tax invoice).
+          </div>
+        """
+
+    address = company.get("address", "").strip()
+    phone = company.get("phone", "").strip()
+    website = company.get("website", "").strip()
+
+    contact_lines = ""
+    if address:
+        contact_lines += f"<div style='font-size:11px;color:#111;'>{address}</div>"
+    if phone or website:
+        contact_lines += f"<div style='font-size:11px;color:#111;'>{phone}{' • ' if phone and website else ''}{website}</div>"
 
     created_txt = str(created)[:19].replace("T", " ") if created else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    footer = (company.get("footer") or "").strip() or "Thank you for your business."
 
     total_html = ""
     if doc_type != "Waybill":
@@ -187,22 +204,61 @@ def build_print_html(company, doc_type, receipt_no, sale_id, created, customer, 
           </div>
         """
 
+    pay_html = ""
+    if payment_method and doc_type != "Waybill":
+        pay_html += f"<div style='margin-top:8px;font-size:12px;'><b>Payment:</b> {payment_method}</div>"
+    if cash_received is not None and doc_type != "Waybill":
+        pay_html += f"<div style='font-size:12px;'><b>Cash Received:</b> {money(cash_received)}</div>"
+    if change_due is not None and doc_type != "Waybill":
+        pay_html += f"<div style='font-size:12px;'><b>Change:</b> {money(change_due)}</div>"
+
+    footer = company.get("footer", "").strip() or "Thank you for your business."
+    rn = receipt_no or ""
+
     html = f"""
     <!doctype html>
     <html>
     <head>
       <meta charset="utf-8"/>
       <style>
-        body {{ font-family: Arial, sans-serif; font-size: 12px; color:#111; margin:0; padding:0; background:#fff; }}
-        .wrap {{ width: 80mm; max-width: 80mm; margin:0 auto; padding:10px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; }}
-        table {{ width:100%; border-collapse:collapse; font-size:11px; }}
-        th,td {{ padding:4px 0; }}
-        button {{ border:1px solid #111; background:#111; color:#fff; padding:6px 10px; border-radius:6px; cursor:pointer; font-weight:700; font-size:11px; }}
+        body {{
+          font-family: Arial, sans-serif;
+          font-size: 12px;
+          color: #111;
+          margin: 0;
+          padding: 0;
+          background: #fff;
+        }}
+        .wrap {{
+          width: 80mm;
+          max-width: 80mm;
+          margin: 0 auto;
+          padding: 10px;
+          background: #fff;
+          border: 1px solid #e5e7eb;
+          border-radius: 8px;
+        }}
+        table {{
+          width: 100%;
+          border-collapse: collapse;
+          font-size: 11px;
+        }}
+        th, td {{ padding: 4px 0; }}
+        button {{
+          border: 1px solid #111;
+          background: #111;
+          color: #fff;
+          padding: 6px 10px;
+          border-radius: 6px;
+          cursor: pointer;
+          font-weight: 700;
+          font-size: 11px;
+        }}
         .muted {{ color:#6b7280; }}
         @media print {{
-          body {{ margin:0; }}
-          .no-print {{ display:none !important; }}
-          @page {{ size:auto; margin:5mm; }}
+          body {{ margin: 0; }}
+          .no-print {{display:none !important; }}
+          @page {{ size: auto; margin: 5mm; }}
         }}
       </style>
     </head>
@@ -212,7 +268,10 @@ def build_print_html(company, doc_type, receipt_no, sale_id, created, customer, 
           <div>{logo_html}</div>
           <div style="flex:1;">
             <div style="font-weight:900;font-size:16px;line-height:1.1;">{company.get('company_name','')}</div>
+            {contact_lines}
             <div class="muted" style="font-size:12px;margin-top:6px;font-weight:800;">{doc_type}</div>
+            {proforma_note}
+            {"<div class='muted' style='font-size:11px;margin-top:2px;'><b>Receipt No:</b> " + rn + "</div>" if rn else ""}
           </div>
         </div>
 
@@ -224,7 +283,6 @@ def build_print_html(company, doc_type, receipt_no, sale_id, created, customer, 
             <div><b>Location:</b> {location_label}</div>
           </div>
           <div style="text-align:right;">
-            <div><b>Receipt:</b> {receipt_no or "-"}</div>
             <div><b>Sale ID:</b> {sale_id}</div>
             <div><b>Date:</b> {created_txt}</div>
           </div>
@@ -238,6 +296,7 @@ def build_print_html(company, doc_type, receipt_no, sale_id, created, customer, 
         </div>
 
         {total_html}
+        {pay_html}
 
         <div style="text-align:center;color:#6b7280;font-size:11px;margin-top:12px;">
           {footer}
@@ -255,6 +314,23 @@ def build_print_html(company, doc_type, receipt_no, sale_id, created, customer, 
 
 # -------------------- Title + Top Controls --------------------
 st.markdown("## 🧾 Point of Sale")
+
+# API quick status (helps local debugging)
+api_ok = True
+try:
+    _ = requests.get(f"{API_BASE}/health", timeout=4)
+except Exception:
+    api_ok = False
+
+if not api_ok:
+    st.error(
+        f"API not reachable at API_BASE={API_BASE}\n\n"
+        "For local testing set:\n"
+        "- PowerShell: $env:API_BASE='http://127.0.0.1:8000'\n"
+        "- CMD: set API_BASE=http://127.0.0.1:8000\n"
+        "and ensure FastAPI is running on port 8000."
+    )
+    st.stop()
 
 # Load locations
 try:
@@ -277,7 +353,7 @@ with top_a:
 with top_b:
     doc_type = st.selectbox("Print document", ["Receipt", "Proforma", "Waybill"], key="pos_doc_type")
 
-
+# Load products
 @st.cache_data(ttl=10)
 def load_products_with_stock(location_id: int):
     try:
@@ -294,14 +370,9 @@ def load_products_with_stock(location_id: int):
         return data
     return []
 
-
-try:
-    products = load_products_with_stock(location_id)
-except Exception as e:
-    st.error(f"Could not load products: {e}")
-    st.stop()
-
+products = load_products_with_stock(location_id)
 df = pd.DataFrame(products)
+
 if df.empty:
     st.warning("No products found yet. Create products first (Products page).")
     st.stop()
@@ -310,7 +381,7 @@ for col in ["sku", "name", "unit", "selling_price", "available_qty"]:
     if col not in df.columns:
         df[col] = None
 
-# Stock map for oversell checks
+# Oversell checks during typed qty
 stock_map = {}
 for _, r in df.iterrows():
     sku = str(r.get("sku") or "").strip()
@@ -323,54 +394,30 @@ for _, r in df.iterrows():
         "selling_price": safe_float(r.get("selling_price"), 0.0),
     }
 
-
 # -------------------- Cart State --------------------
 if "cart" not in st.session_state:
     st.session_state["cart"] = []
-
 if "last_sale_id" not in st.session_state:
     st.session_state["last_sale_id"] = None
-
 if "print_now" not in st.session_state:
     st.session_state["print_now"] = False
 
-# ✅ Add Panel state (REPLACES popover)
-if "add_panel_sku" not in st.session_state:
-    st.session_state["add_panel_sku"] = None
-
-if "add_panel_qty" not in st.session_state:
-    st.session_state["add_panel_qty"] = 0.0
-
+# Cash & change state
+if "pending_method" not in st.session_state:
+    st.session_state["pending_method"] = None
+if "cash_received" not in st.session_state:
+    st.session_state["cash_received"] = None
+if "last_payment_method" not in st.session_state:
+    st.session_state["last_payment_method"] = None
+if "last_change_due" not in st.session_state:
+    st.session_state["last_change_due"] = None
+if "last_cash_received" not in st.session_state:
+    st.session_state["last_cash_received"] = None
+if "last_receipt_no" not in st.session_state:
+    st.session_state["last_receipt_no"] = None
 
 def cart_find(sku: str):
     return next((x for x in st.session_state.get("cart", []) if x["sku"] == sku), None)
-
-
-def cart_add_qty(sku: str, name: str, unit: str, unit_price: float, available_qty, qty_to_add: float):
-    if not sku:
-        return
-
-    step = get_step_for_unit(unit)
-    qty_to_add = clamp_to_step(max(0.0, float(qty_to_add)), step)
-    if qty_to_add <= 0:
-        return
-
-    cart = st.session_state.get("cart", [])
-    existing = cart_find(sku)
-    already = safe_float(existing["qty"], 0.0) if existing else 0.0
-
-    avail_f = safe_float(available_qty, None)
-    if avail_f is not None and already + qty_to_add > avail_f:
-        st.warning(f"Not enough stock. Available: {avail_f:.2f} {unit}")
-        return
-
-    if existing:
-        existing["qty"] = clamp_to_step(already + qty_to_add, step)
-    else:
-        cart.append({"sku": sku, "name": name, "unit": unit, "qty": qty_to_add, "unit_price": float(unit_price)})
-
-    st.session_state["cart"] = cart
-
 
 def cart_set_qty(sku: str, qty: float):
     cart = st.session_state.get("cart", [])
@@ -393,42 +440,33 @@ def cart_set_qty(sku: str, qty: float):
         line["qty"] = float(new_qty)
         st.session_state["cart"] = cart
 
-
-def cart_minus(sku: str):
-    cart = st.session_state.get("cart", [])
-    existing = cart_find(sku)
-    if not existing:
-        return
-
-    unit = existing.get("unit", "")
-    step = get_step_for_unit(unit)
-    new_qty = clamp_to_step(max(0.0, safe_float(existing["qty"], 0.0) - step), step)
-
-    if new_qty <= 0:
-        st.session_state["cart"] = [x for x in cart if x["sku"] != sku]
-    else:
-        existing["qty"] = new_qty
-        st.session_state["cart"] = cart
-
-
-def cart_plus(sku: str):
-    line = cart_find(sku)
-    if not line:
-        return
-    unit = line.get("unit", "")
-    step = get_step_for_unit(unit)
-    cart_add_qty(
-        sku=sku,
-        name=line.get("name", ""),
-        unit=unit,
-        unit_price=float(line.get("unit_price", 0.0)),
-        available_qty=stock_map.get(sku, {}).get("available_qty", None),
-        qty_to_add=float(step),
-    )
-
-
 def cart_remove(sku: str):
     st.session_state["cart"] = [x for x in st.session_state.get("cart", []) if x["sku"] != sku]
+
+def cart_add_qty(sku: str, name: str, unit: str, unit_price: float, available_qty, qty_to_add: float):
+    if not sku:
+        return
+
+    step = get_step_for_unit(unit)
+    qty_to_add = clamp_to_step(max(0.0, float(qty_to_add)), step)
+    if qty_to_add <= 0:
+        return
+
+    cart = st.session_state.get("cart", [])
+    existing = next((x for x in cart if x["sku"] == sku), None)
+    already = safe_float(existing["qty"], 0.0) if existing else 0.0
+
+    avail_f = safe_float(available_qty, None)
+    if avail_f is not None and already + qty_to_add > avail_f:
+        st.warning(f"Not enough stock. Available: {avail_f:.2f} {unit}")
+        return
+
+    if existing:
+        existing["qty"] = clamp_to_step(already + qty_to_add, step)
+    else:
+        cart.append({"sku": sku, "name": name, "unit": unit, "qty": qty_to_add, "unit_price": float(unit_price)})
+
+    st.session_state["cart"] = cart
 
 
 # -------------------- Layout --------------------
@@ -444,6 +482,8 @@ with left:
         st.info("Cart is empty. Add products on the right.")
     else:
         total = 0.0
+
+        # ✅ BIG ➖/➕ REMOVED: only typed qty + delete
         for line in list(cart):
             sku = str(line["sku"])
             unit = str(line.get("unit") or "")
@@ -462,11 +502,7 @@ with left:
                 unsafe_allow_html=True,
             )
 
-            c1, c2, c3, c4 = st.columns([1, 1.4, 1, 0.8], gap="small")
-
-            if c1.button("➖", key=f"minus_{sku}", use_container_width=True):
-                cart_minus(sku)
-                st.rerun()
+            c2, c4 = st.columns([2.2, 0.8], gap="small")
 
             with c2:
                 typed_qty = st.number_input(
@@ -481,10 +517,6 @@ with left:
                 if float(typed_qty) != float(qty):
                     cart_set_qty(sku, float(typed_qty))
                     st.rerun()
-
-            if c3.button("➕", key=f"plus_{sku}", use_container_width=True):
-                cart_plus(sku)
-                st.rerun()
 
             if c4.button("🗑", key=f"rm_{sku}", use_container_width=True):
                 cart_remove(sku)
@@ -507,91 +539,114 @@ with left:
 
         if p4.button("🗑 Clear All", use_container_width=True):
             st.session_state["cart"] = []
+            st.session_state["pending_method"] = None
+            st.session_state["cash_received"] = None
             st.rerun()
 
-        if pay_cash or pay_card or pay_momo:
-            method = "CASH" if pay_cash else ("CARD" if pay_card else "MOMO")
+        # ---- Cash & Change flow ----
+        if pay_cash:
+            st.session_state["pending_method"] = "CASH"
+            st.session_state["cash_received"] = None
 
-            payload = {
-                "customer_name": (customer_name or None),
-                "location_id": int(location_id),
-                "payment_method": method,
-                "lines": [
-                    {"sku": ln["sku"], "qty": float(ln["qty"]), "unit_price": float(ln["unit_price"])}
-                    for ln in st.session_state["cart"]
-                ],
-            }
+        if pay_card:
+            st.session_state["pending_method"] = "CARD"
 
-            r = api_post("/sales", payload)
+        if pay_momo:
+            st.session_state["pending_method"] = "MOMO"
 
-            if r.status_code == 200:
-                data = r.json() or {}
-                sale_id = int(data.get("sale_id") or data.get("id") or 0)
-                receipt_no = data.get("receipt_no")
+        pending = st.session_state.get("pending_method")
 
-                st.session_state["last_sale_id"] = sale_id
-                st.session_state["cart"] = []
-                st.session_state["print_now"] = False
+        if pending == "CASH":
+            st.markdown("#### 💵 Cash Payment")
+            cash_received = st.number_input(
+                "Cash Received",
+                min_value=0.0,
+                value=float(st.session_state.get("cash_received") or total),
+                step=1.0,
+                format="%.2f",
+                key="cash_received_input",
+            )
+            st.session_state["cash_received"] = float(cash_received)
+            change_due = float(cash_received) - float(total)
+            st.info(f"Change: {money(change_due)}")
 
-                st.success(f"Sale #{sale_id} ({receipt_no}) recorded. Total {money(data.get('total', total))}")
-                st.cache_data.clear()
-                st.rerun()
-            else:
-                st.error(f"Error: {r.status_code} – {r.text}")
+            confirm_cash = st.button("✅ Confirm Cash Sale", use_container_width=True)
+            if confirm_cash:
+                if cash_received < total:
+                    st.error("Cash received is less than Total. Increase cash received.")
+                else:
+                    # proceed checkout
+                    method = "CASH"
+                    payload = {
+                        "customer_name": (customer_name or None),
+                        "location_id": int(location_id),
+                        "payment_method": method,
+                        "lines": [
+                            {"sku": ln["sku"], "qty": float(ln["qty"]), "unit_price": float(ln["unit_price"])}
+                            for ln in st.session_state["cart"]
+                        ],
+                    }
+                    r = api_post("/sales", payload)
+                    if r.status_code == 200:
+                        data = r.json() or {}
+                        sale_id = int(data.get("sale_id") or data.get("id") or 0)
+
+                        st.session_state["last_sale_id"] = sale_id
+                        st.session_state["last_payment_method"] = method
+                        st.session_state["last_cash_received"] = float(cash_received)
+                        st.session_state["last_change_due"] = float(change_due)
+                        st.session_state["last_receipt_no"] = data.get("receipt_no")
+
+                        st.session_state["cart"] = []
+                        st.session_state["pending_method"] = None
+                        st.session_state["print_now"] = False
+
+                        st.success(f"Sale #{sale_id} recorded. Total {money(data.get('total', total))}")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error(f"Error: {r.status_code} – {r.text}")
+
+        # Card/MoMo immediate checkout
+        if pending in ["CARD", "MOMO"]:
+            method = pending
+            confirm_non_cash = st.button(f"✅ Confirm {method} Sale", use_container_width=True)
+            if confirm_non_cash:
+                payload = {
+                    "customer_name": (customer_name or None),
+                    "location_id": int(location_id),
+                    "payment_method": method,
+                    "lines": [
+                        {"sku": ln["sku"], "qty": float(ln["qty"]), "unit_price": float(ln["unit_price"])}
+                        for ln in st.session_state["cart"]
+                    ],
+                }
+                r = api_post("/sales", payload)
+                if r.status_code == 200:
+                    data = r.json() or {}
+                    sale_id = int(data.get("sale_id") or data.get("id") or 0)
+
+                    st.session_state["last_sale_id"] = sale_id
+                    st.session_state["last_payment_method"] = method
+                    st.session_state["last_cash_received"] = None
+                    st.session_state["last_change_due"] = None
+                    st.session_state["last_receipt_no"] = data.get("receipt_no")
+
+                    st.session_state["cart"] = []
+                    st.session_state["pending_method"] = None
+                    st.session_state["print_now"] = False
+
+                    st.success(f"Sale #{sale_id} recorded. Total {money(data.get('total', total))}")
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error(f"Error: {r.status_code} – {r.text}")
 
 
 # ================= RIGHT: PRODUCTS =================
 with right:
     st.markdown("### 📦 Products")
     search = st.text_input("Search product name / SKU", key="pos_search")
-
-    # ✅ Add Panel (reliable replacement for popover)
-    if st.session_state["add_panel_sku"]:
-        sku = st.session_state["add_panel_sku"]
-        info = stock_map.get(sku, {})
-        name = info.get("name", sku)
-        unit = info.get("unit", "")
-        price = info.get("selling_price", 0.0)
-        avail = info.get("available_qty", None)
-        step = get_step_for_unit(unit)
-
-        st.markdown("#### ➕ Add Quantity")
-        a1, a2, a3, a4 = st.columns([2.2, 1.2, 1.2, 1.2], gap="small")
-
-        with a1:
-            st.info(f"**{name}** • SKU {sku} • {unit} • Price {money(price)}")
-
-        with a2:
-            qty_to_add = st.number_input(
-                "Qty to add",
-                min_value=0.0,
-                value=float(st.session_state.get("add_panel_qty", step) or step),
-                step=float(step),
-                format="%.3f",
-                key="add_panel_qty_input",
-            )
-
-        with a3:
-            if st.button("✅ Add to Cart", use_container_width=True):
-                cart_add_qty(
-                    sku=sku,
-                    name=name,
-                    unit=unit,
-                    unit_price=float(price),
-                    available_qty=avail,
-                    qty_to_add=float(qty_to_add),
-                )
-                st.session_state["add_panel_sku"] = None
-                st.session_state["add_panel_qty"] = 0.0
-                st.rerun()
-
-        with a4:
-            if st.button("❌ Cancel", use_container_width=True):
-                st.session_state["add_panel_sku"] = None
-                st.session_state["add_panel_qty"] = 0.0
-                st.rerun()
-
-        st.markdown("---")
 
     show_df = df.copy()
     if search:
@@ -632,16 +687,33 @@ with right:
                     unsafe_allow_html=True,
                 )
 
-                # ✅ Reliable Add button -> opens Add Panel
-                if st.button("➕ Add", key=f"open_add_{sku}", use_container_width=True):
-                    st.session_state["add_panel_sku"] = sku
-                    st.session_state["add_panel_qty"] = get_step_for_unit(unit)
-                    st.rerun()
+                step = get_step_for_unit(unit)
+
+                # ✅ Robust typed add: uses expander instead of popover (popover can be flaky in some Streamlit builds)
+                with st.expander("➕ Add", expanded=False):
+                    qty_to_add = st.number_input(
+                        "Qty to add",
+                        min_value=0.0,
+                        value=float(step),
+                        step=float(step),
+                        format="%.3f",
+                        key=f"add_qty_{sku}",
+                    )
+                    if st.button("✅ Add to Cart", key=f"confirm_add_{sku}", use_container_width=True):
+                        cart_add_qty(
+                            sku=sku,
+                            name=name,
+                            unit=unit,
+                            unit_price=float(price),
+                            available_qty=avail,
+                            qty_to_add=float(qty_to_add),
+                        )
+                        st.rerun()
 
         st.markdown("</div>", unsafe_allow_html=True)
 
 
-# ================= PRINT AREA =================
+# ================= PRINT AREA (Same POS Page) =================
 st.markdown("---")
 st.markdown("## 🖨 Print Area")
 
@@ -653,7 +725,6 @@ if not sale_id:
 else:
     sale = None
     lines = []
-
     try:
         data = api_get(f"/sales/{int(sale_id)}")
         sale, lines = parse_sale_response(data)
@@ -672,6 +743,10 @@ else:
         if cpb.button("Clear last sale", use_container_width=True):
             st.session_state["last_sale_id"] = None
             st.session_state["print_now"] = False
+            st.session_state["last_receipt_no"] = None
+            st.session_state["last_payment_method"] = None
+            st.session_state["last_cash_received"] = None
+            st.session_state["last_change_due"] = None
             st.rerun()
         if cpc.button("Refresh", use_container_width=True):
             st.cache_data.clear()
@@ -682,21 +757,28 @@ else:
         created = sale.get("created_at") or ""
         customer = sale.get("customer_name") or "Walk-in Customer"
         total_amount = sale.get("total") or sale.get("total_amount") or 0
-        receipt_no = sale.get("receipt_no") or ""
+
+        receipt_no = sale.get("receipt_no") or st.session_state.get("last_receipt_no")
+        payment_method = st.session_state.get("last_payment_method")
+        cash_received = st.session_state.get("last_cash_received")
+        change_due = st.session_state.get("last_change_due")
 
         html = build_print_html(
             company=company,
             doc_type=doc_type,
-            receipt_no=receipt_no,
             sale_id=sale.get("id", sale_id),
             created=created,
             customer=customer,
             location_label=location_label,
             lines=lines,
             total_amount=total_amount,
+            receipt_no=receipt_no,
+            payment_method=payment_method,
+            cash_received=cash_received,
+            change_due=change_due,
         )
-        if st.session_state.get("print_now"):
 
+        if st.session_state.get("print_now"):
             html = html.replace("</body>", "<script>window.print();</script></body>")
             st.session_state["print_now"] = False
 
