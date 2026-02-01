@@ -138,6 +138,14 @@ if not df_full.empty:
         selected_id = int(selected_label.split("–")[0].strip())
         selected_row = df_full[df_full["id"] == selected_id].iloc[0].to_dict()
 
+        st.info(
+               f"SKU: {selected_row.get('sku')} | Unit: {selected_row.get('unit')} | "
+               f"Price: ₵ {float(selected_row.get('selling_price') or 0):,.2f} | "
+               f"Tax: {float(selected_row.get('tax_rate') or 0):,.2f}% | "
+               f"Barcode: {selected_row.get('barcode') or '—'}"
+        ) 
+
+
         st.markdown(f"**Editing ID {selected_id} – {selected_row['name']}**")
 
         with st.form("edit_product"):

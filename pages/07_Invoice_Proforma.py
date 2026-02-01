@@ -27,7 +27,6 @@ def render_print_button():
         unsafe_allow_html=True,
     )
 
-    # Streamlit button + JS hook
     st.button("🖨 Print Receipt", use_container_width=True, key="print_btn")
 
     st.markdown(
@@ -135,8 +134,8 @@ if load_clicked:
         r = requests.get(f"{API_BASE}/sales/{int(sale_id)}", timeout=15)
         r.raise_for_status()
         data = r.json()
-        sale = data.get("sale")
-        lines = data.get("lines", [])
+        sale = data.get("sale") or {}
+        lines = data.get("lines", []) or []
         st.session_state["last_sale_id"] = int(sale_id)
         st.session_state["last_doc_type"] = doc_type
     except Exception as e:
@@ -146,10 +145,10 @@ if load_clicked:
 
 # ---------------- COMPUTED FIELDS ----------------
 user = st.session_state.get("user") or {}
-served_by = (user.get("full_name") or user.get("username") or "").strip()
+served_by = str(user.get("full_name") or user.get("username") or "").strip()
 
-# Payment method stored from POS (we’ll set this in POS after payment)
-payment_method = st.session_state.get("last_payment_method", "Cash / MoMo").strip()
+# ✅ SAFE: never crashes even if None
+payment_method = str(st.session_state.get("last_payment_method") or "Cash / MoMo").strip()
 
 # ---------------- RENDER RECEIPT ----------------
 if sale is not None:
@@ -181,18 +180,21 @@ if sale is not None:
     st.write("---")
 
     # META
-    raw_date = sale.get("created_at", "")
+    raw_date = sale.get("created_at") or ""
     if raw_date:
         try:
-            dt = datetime.fromisoformat(raw_date)
+            dt = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
             sale_date = dt.strftime("%Y-%m-%d")
         except Exception:
-            sale_date = raw_date[:10]
+            sale_date = str(raw_date)[:10]
     else:
         sale_date = ""
 
     printed_time = datetime.now().strftime("%H:%M")
-    customer = sale.get("customer_name") or "Walk-in Customer"
+
+    # ✅ SAFE customer
+    cust_raw = sale.get("customer_name")
+    customer = str(cust_raw or "Walk-in Customer").strip()
 
     m1, m2 = st.columns(2)
     with m1:
@@ -203,6 +205,9 @@ if sale is not None:
     with m2:
         st.write(f"**Date:** {sale_date} {printed_time}")
         st.write(f"**Sale ID:** {sale.get('id', '')}")
+        # show receipt no if available
+        if sale.get("receipt_no"):
+            st.write(f"**Receipt No:** {sale.get('receipt_no')}")
 
     st.write("")
 
@@ -213,17 +218,17 @@ if sale is not None:
         if "product_name" not in df.columns and "name" in df.columns:
             df["product_name"] = df["name"]
 
-        rename_map = {
-            "product_name": "Item",
-            "qty": "Qty",
-            "unit_price": "Unit Price (₵)",
-            "line_total": "Line Total (₵)",
-        }
-        df = df.rename(columns=rename_map)
+        df = df.rename(
+            columns={
+                "product_name": "Item",
+                "qty": "Qty",
+                "unit_price": "Unit Price (₵)",
+                "line_total": "Line Total (₵)",
+            }
+        )
 
         wanted = ["Item", "Qty", "Unit Price (₵)", "Line Total (₵)"]
-        cols = [c for c in wanted if c in df.columns]
-        df = df[cols]
+        df = df[[c for c in wanted if c in df.columns]]
 
         for col in ["Qty", "Unit Price (₵)", "Line Total (₵)"]:
             if col in df.columns:
