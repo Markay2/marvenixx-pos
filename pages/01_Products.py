@@ -120,14 +120,20 @@ else:
     st.info("No products yet.")
     df_full = pd.DataFrame([])
 
+
+
+
+
 # ------------------ EDIT / DELETE (ADMIN ONLY) ------------------ #
 
 if not df_full.empty:
     if is_admin:
         st.markdown("### Admin: Edit or deactivate product")
 
-        # Build labels like "3 – Frozen Chicken (CHICK0001)"
+        # Sort for stable selection
         df_full = df_full.sort_values("id")
+
+        # Build labels like "3 – Frozen Chicken (CHICK0001)"
         choices = [
             f"{row['id']} – {row['name']} ({row['sku']})"
             for _, row in df_full.iterrows()
@@ -138,60 +144,62 @@ if not df_full.empty:
         selected_id = int(selected_label.split("–")[0].strip())
         selected_row = df_full[df_full["id"] == selected_id].iloc[0].to_dict()
 
+        # ✅ Show a quick product info strip
         st.info(
-               f"SKU: {selected_row.get('sku')} | Unit: {selected_row.get('unit')} | "
-               f"Price: ₵ {float(selected_row.get('selling_price') or 0):,.2f} | "
-               f"Tax: {float(selected_row.get('tax_rate') or 0):,.2f}% | "
-               f"Barcode: {selected_row.get('barcode') or '—'}"
-        ) 
+            f"SKU: {selected_row.get('sku')} | "
+            f"Unit: {selected_row.get('unit')} | "
+            f"Price: ₵ {float(selected_row.get('selling_price') or 0):,.2f} | "
+            f"Tax: {float(selected_row.get('tax_rate') or 0):.2f}% | "
+            f"Barcode: {selected_row.get('barcode') or '—'}"
+        )
 
+        st.markdown(f"**Editing ID {selected_id} – {selected_row.get('name','')}**")
 
-        st.markdown(f"**Editing ID {selected_id} – {selected_row['name']}**")
+        # ✅ Use unique keys so values refresh when product changes
+        key_name = f"name_edit_{selected_id}"
+        key_barcode = f"barcode_edit_{selected_id}"
+        key_unit = f"unit_edit_{selected_id}"
+        key_tax = f"tax_edit_{selected_id}"
+        key_price = f"price_edit_{selected_id}"
 
-        with st.form("edit_product"):
+        # unit options must match create form
+        unit_options = [
+            "piece", "kg", "box", "carton", "gallon",
+            "sachet", "bag", "bottle", "tin", "other"
+        ]
+
+        current_unit = selected_row.get("unit") or "piece"
+        try:
+            default_unit_idx = unit_options.index(current_unit)
+        except ValueError:
+            default_unit_idx = 0
+
+        with st.form(f"edit_product_{selected_id}"):
             ec1, ec2 = st.columns(2)
 
-            new_name = ec1.text_input("Name", value=selected_row.get("name", ""))
-            new_barcode = ec2.text_input("Barcode", value=selected_row.get("barcode") or "")
-
-            # unit options must match create form
-            unit_options = [
-                "piece",
-                "kg",
-                "box",
-                "carton",
-                "gallon",
-                "sachet",
-                "bag",
-                "bottle",
-                "tin",
-                "other",
-            ]
-            current_unit = selected_row.get("unit") or "piece"
-            try:
-                default_unit_idx = unit_options.index(current_unit)
-            except ValueError:
-                default_unit_idx = 0
+            new_name = ec1.text_input("Name", value=selected_row.get("name", ""), key=key_name)
+            new_barcode = ec2.text_input("Barcode", value=selected_row.get("barcode") or "", key=key_barcode)
 
             new_unit = ec1.selectbox(
                 "Unit",
                 options=unit_options,
                 index=default_unit_idx,
-                key="unit_edit",
+                key=key_unit,
             )
 
             new_tax = ec2.number_input(
                 "Tax %",
                 value=float(selected_row.get("tax_rate") or 0.0),
                 step=0.01,
-                key="tax_edit",
+                key=key_tax,
             )
+
             new_price = ec1.number_input(
                 "Selling Price (₵)",
                 min_value=0.0,
                 value=float(selected_row.get("selling_price") or 0.0),
                 step=0.1,
-                key="price_edit",
+                key=key_price,
             )
 
             col_save, col_deact = st.columns(2)
@@ -200,18 +208,14 @@ if not df_full.empty:
 
             if save_clicked:
                 payload = {
-                    "name": new_name.strip(),
-                    "barcode": new_barcode.strip() or None,
+                    "name": (new_name or "").strip(),
+                    "barcode": (new_barcode or "").strip() or None,
                     "unit": new_unit,
                     "tax_rate": float(new_tax),
                     "selling_price": float(new_price),
                 }
                 try:
-                    r = requests.patch(
-                        f"{API_BASE}/products/{selected_id}",
-                        json=payload,
-                        timeout=15,
-                    )
+                    r = requests.patch(f"{API_BASE}/products/{selected_id}", json=payload, timeout=15)
                     if r.status_code == 200:
                         st.success("Product updated.")
                         st.cache_data.clear()
@@ -223,10 +227,7 @@ if not df_full.empty:
 
             if deactivate_clicked:
                 try:
-                    r = requests.delete(
-                        f"{API_BASE}/products/{selected_id}",
-                        timeout=15,
-                    )
+                    r = requests.delete(f"{API_BASE}/products/{selected_id}", timeout=15)
                     if r.status_code == 200:
                         st.success("Product deactivated. It will no longer appear in POS / Receive Stock.")
                         st.cache_data.clear()
@@ -235,22 +236,6 @@ if not df_full.empty:
                         st.error(f"Error from API: {r.status_code} – {r.text}")
                 except Exception as e:
                     st.error(f"Error calling API: {e}")
+
     else:
         st.info("Log in as an admin user on the Home page to edit or deactivate products.")
-
-
-
-@st.dialog("Edit product (Admin)")
-def edit_product_dialog(prod):
-    new_name = st.text_input("Name", value=prod["name"])
-    new_unit = st.selectbox("Unit", ["piece","kg","box","carton","gallon","sachet","bag"], index=0)
-    new_price = st.number_input("Selling price", value=float(prod["selling_price"]), step=0.1)
-    if st.button("Save changes"):
-        payload = {"name": new_name, "unit": new_unit, "selling_price": new_price}
-        r = requests.put(f"{API_BASE}/products/{prod['id']}", json=payload, timeout=10)
-        if r.status_code == 200:
-            st.success("Updated.")
-            st.rerun()
-        else:
-            st.error(r.text)
-
